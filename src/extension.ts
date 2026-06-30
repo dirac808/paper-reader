@@ -15,6 +15,10 @@ import { NoteStore } from './noteStore';
 import { translatePdfToMarkdownWindow } from './paperTranslation';
 import { PdfCustomProvider } from './pdfProvider';
 import { extendMarkdownItWithMath } from './markdownMath';
+import {
+  MarkdownWysiwygProvider,
+  openMarkdownWysiwyg,
+} from './markdownWysiwygProvider';
 
 export function activate(
   context: vscode.ExtensionContext
@@ -58,6 +62,17 @@ export function activate(
     )
   );
   context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(
+      MarkdownWysiwygProvider.viewType,
+      new MarkdownWysiwygProvider(context),
+      {
+        webviewOptions: {
+          retainContextWhenHidden: true,
+        },
+      }
+    )
+  );
+  context.subscriptions.push(
     vscode.commands.registerCommand(
       'dipe-paper-reader.openPdf',
       async (resource?: vscode.Uri) => {
@@ -93,6 +108,29 @@ export function activate(
         } catch (error) {
           vscode.window.showErrorMessage(
             `Unable to send selection to Codex: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'dipe-paper-reader.openMarkdownWysiwyg',
+      async (resource?: vscode.Uri) => {
+        try {
+          const uri = resource || vscode.window.activeTextEditor?.document.uri;
+          if (!uri || !/\.(md|markdown)$/i.test(uri.fsPath || uri.path)) {
+            vscode.window.showErrorMessage(
+              'Please select a Markdown file to open with Paper Reader.'
+            );
+            return;
+          }
+          await openMarkdownWysiwyg(uri);
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Unable to open Paper Reader Markdown editor: ${
               error instanceof Error ? error.message : String(error)
             }`
           );

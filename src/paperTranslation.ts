@@ -8,6 +8,7 @@ import {
   translateAcademicMarkdown,
 } from './deepSeekClient';
 import { getConfiguredOutputRoot, getStoredSettingValue } from './config';
+import { openMarkdownWysiwyg } from './markdownWysiwygProvider';
 
 type ExtractResult = {
   ok: boolean;
@@ -510,12 +511,16 @@ async function showMarkdownInNewWindow(
   title: string
 ): Promise<void> {
   const uri = vscode.Uri.file(markdownPath);
-  const document = await vscode.workspace.openTextDocument(uri);
-  await vscode.window.showTextDocument(document, {
-    preserveFocus: false,
-    preview: false,
-    viewColumn: vscode.ViewColumn.Beside,
-  });
+  try {
+    await openMarkdownWysiwyg(uri, vscode.ViewColumn.Beside);
+  } catch {
+    const document = await vscode.workspace.openTextDocument(uri);
+    await vscode.window.showTextDocument(document, {
+      preserveFocus: false,
+      preview: false,
+      viewColumn: vscode.ViewColumn.Beside,
+    });
+  }
 
   try {
     await vscode.commands.executeCommand(

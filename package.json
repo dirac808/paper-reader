@@ -25,6 +25,7 @@
     "onCommand:dipe-paper-reader.openPdf",
     "onCommand:dipe-paper-reader.testSendToCodex",
     "onCommand:dipe-paper-reader.sendSelectionToCodex",
+    "onCommand:dipe-paper-reader.openMarkdownWysiwyg",
     "onCommand:dipe-paper-reader.selfCheck",
     "onCommand:dipe-paper-reader.openConfiguration",
     "onView:paper-reader.configurationView",
@@ -72,6 +73,19 @@
             "filenamePattern": "*.pdf"
           }
         ]
+      },
+      {
+        "viewType": "paper-reader.markdownEditor",
+        "displayName": "Paper Reader Markdown",
+        "priority": "option",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          },
+          {
+            "filenamePattern": "*.markdown"
+          }
+        ]
       }
     ],
     "commands": [
@@ -86,6 +100,10 @@
       {
         "command": "dipe-paper-reader.sendSelectionToCodex",
         "title": "Paper Reader: Send Selection to Codex"
+      },
+      {
+        "command": "dipe-paper-reader.openMarkdownWysiwyg",
+        "title": "Paper Reader: Open Markdown WYSIWYG"
       },
       {
         "command": "dipe-paper-reader.selfCheck",
@@ -135,6 +153,30 @@
           "command": "dipe-paper-reader.addSelectionToNotes",
           "when": "editorTextFocus && editorHasSelection && editorLangId == markdown",
           "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "dipe-paper-reader.openMarkdownWysiwyg",
+          "when": "resourceExtname == '.md' || resourceExtname == '.markdown'",
+          "group": "navigation@-2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "dipe-paper-reader.openPdf",
+          "when": "resourceFilename =~ /\\.pdf$/i",
+          "group": "navigation"
+        },
+        {
+          "command": "dipe-paper-reader.translateCurrentPdf",
+          "when": "resourceFilename =~ /\\.pdf$/i",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dipe-paper-reader.openMarkdownWysiwyg",
+          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
+          "group": "navigation@3"
         }
       ]
     },
@@ -233,6 +275,66 @@
           "markdownDescription": "Directory for generated translations, notes, and PDF annotations. Relative paths are resolved from the current workspace root.",
           "type": "string",
           "default": "paper-reader-output"
+        },
+        "paper-reader.markdown.editMode": {
+          "markdownDescription": "Default edit mode for the Paper Reader Markdown editor. `wysiwyg` is closest to Typora; `ir` keeps more Markdown source markers visible.",
+          "type": "string",
+          "default": "wysiwyg",
+          "enum": [
+            "wysiwyg",
+            "ir"
+          ]
+        },
+        "paper-reader.markdown.editorTheme": {
+          "markdownDescription": "Theme for the Paper Reader Markdown editor.",
+          "type": "string",
+          "default": "Auto",
+          "enum": [
+            "Auto",
+            "Light",
+            "Solarized",
+            "Warm Light",
+            "Dim Light",
+            "One Dark",
+            "Github Dark",
+            "Nord",
+            "Monokai",
+            "Dracula"
+          ]
+        },
+        "paper-reader.markdown.codeMirrorTheme": {
+          "markdownDescription": "Code block theme for the Paper Reader Markdown editor.",
+          "type": "string",
+          "default": "Auto",
+          "enum": [
+            "Auto",
+            "Github",
+            "Solarized Light",
+            "Material Light",
+            "Quiet Light",
+            "One Light",
+            "Dracula",
+            "Monokai",
+            "One Dark",
+            "Solarized Dark",
+            "Material Dark"
+          ]
+        },
+        "paper-reader.markdown.mermaidTheme": {
+          "markdownDescription": "Mermaid diagram theme for the Paper Reader Markdown editor.",
+          "type": "string",
+          "default": "Auto",
+          "enum": [
+            "Auto",
+            "Light",
+            "Forest",
+            "Ocean",
+            "Sunset",
+            "Dark",
+            "Dracula",
+            "Monokai",
+            "Nord"
+          ]
         },
         "paper-reader.mineru.executable": {
           "markdownDescription": "MinerU CLI executable path. Use `mineru` when it is available on PATH.",
