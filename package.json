@@ -1,0 +1,398 @@
+{
+  "name": "paper-reader",
+  "displayName": "Paper Reader",
+  "description": "A VS Code research paper reader with PDF viewing, Codex context actions, MinerU extraction, and AI translation.",
+  "version": "1.2.2",
+  "publisher": "paper-reader-lab",
+  "engines": {
+    "vscode": "^1.46.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "paper",
+    "research",
+    "pdf",
+    "viewer",
+    "translation",
+    "codex",
+    "mineru"
+  ],
+  "icon": "vscode-pdf.png",
+  "activationEvents": [
+    "onCustomEditor:dipe.paperReader",
+    "onCommand:dipe-paper-reader.openPdf",
+    "onCommand:dipe-paper-reader.testSendToCodex",
+    "onCommand:dipe-paper-reader.sendSelectionToCodex",
+    "onCommand:dipe-paper-reader.selfCheck",
+    "onCommand:dipe-paper-reader.openConfiguration",
+    "onView:paper-reader.configurationView",
+    "onCommand:dipe-paper-reader.openNotes",
+    "onCommand:dipe-paper-reader.addSelectionToNotes",
+    "onCommand:dipe-paper-reader.openKnowledgeGraph",
+    "onCommand:dipe-paper-reader.translateCurrentPdf"
+  ],
+  "main": "./out/src/extension",
+  "contributes": {
+    "capabilities": {
+      "untrustedWorkspaces": {
+        "supported": true
+      }
+    },
+    "markdown.markdownItPlugins": true,
+    "markdown.previewStyles": [
+      "./node_modules/katex/dist/katex.min.css"
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "paper-reader",
+          "title": "Paper Reader",
+          "icon": "media/paper-reader.svg"
+        }
+      ]
+    },
+    "views": {
+      "paper-reader": [
+        {
+          "id": "paper-reader.configurationView",
+          "name": "Configuration",
+          "type": "webview"
+        }
+      ]
+    },
+    "customEditors": [
+      {
+        "viewType": "dipe.paperReader",
+        "displayName": "Paper Reader",
+        "priority": "default",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "dipe-paper-reader.openPdf",
+        "title": "Paper Reader: Open Current PDF"
+      },
+      {
+        "command": "dipe-paper-reader.testSendToCodex",
+        "title": "Paper Reader: Test Send Selection to Codex"
+      },
+      {
+        "command": "dipe-paper-reader.sendSelectionToCodex",
+        "title": "Paper Reader: Send Selection to Codex"
+      },
+      {
+        "command": "dipe-paper-reader.selfCheck",
+        "title": "Paper Reader: Self Check"
+      },
+      {
+        "command": "dipe-paper-reader.openConfiguration",
+        "title": "Paper Reader: Open Configuration"
+      },
+      {
+        "command": "dipe-paper-reader.openNotes",
+        "title": "Paper Reader: Open Notes"
+      },
+      {
+        "command": "dipe-paper-reader.addSelectionToNotes",
+        "title": "Paper Reader: Add Selection to Notes"
+      },
+      {
+        "command": "dipe-paper-reader.openKnowledgeGraph",
+        "title": "Paper Reader: Open Knowledge Graph"
+      },
+      {
+        "command": "dipe-paper-reader.translateCurrentPdf",
+        "title": "Paper Reader: Translate Current PDF"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "dipe-paper-reader.openPdf",
+          "when": "resourceFilename =~ /\\.pdf$/i",
+          "group": "navigation"
+        },
+        {
+          "command": "dipe-paper-reader.translateCurrentPdf",
+          "when": "resourceFilename =~ /\\.pdf$/i",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "dipe-paper-reader.sendSelectionToCodex",
+          "when": "editorTextFocus && editorHasSelection",
+          "group": "navigation"
+        },
+        {
+          "command": "dipe-paper-reader.addSelectionToNotes",
+          "when": "editorTextFocus && editorHasSelection && editorLangId == markdown",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "type": "object",
+      "title": "Paper Reader",
+      "properties": {
+        "paper-reader.default.cursor": {
+          "markdownDescription": "The default cursor tool for preview.",
+          "type": "string",
+          "default": "select",
+          "enum": [
+            "select",
+            "hand"
+          ]
+        },
+        "paper-reader.default.scale": {
+          "markdownDescription": "The default zoom level for preview. Allowed values are `auto`, `page-actual`, `page-fit`, `page-width`, and 1-based scale values. (`1.0` means 100%)",
+          "type": "string",
+          "default": "auto",
+          "pattern": "^(\\d+(?:\\.\\d+)?|auto|page-actual|page-fit|page-width)$"
+        },
+        "paper-reader.default.sidebar": {
+          "markdownDescription": "Show the sidebar on load. The default visibility of sidebar for preview.",
+          "type": "boolean",
+          "default": false
+        },
+        "paper-reader.default.scrollMode": {
+          "markdownDescription": "The default scroll mode for preview.",
+          "type": "string",
+          "default": "vertical",
+          "enum": [
+            "vertical",
+            "horizontal",
+            "wrapped"
+          ]
+        },
+        "paper-reader.default.spreadMode": {
+          "markdownDescription": "The default spread mode for preview.",
+          "type": "string",
+          "default": "none",
+          "enum": [
+            "none",
+            "odd",
+            "even"
+          ]
+        },
+        "paper-reader.ai.apiKey": {
+          "markdownDescription": "OpenAI-compatible API key for full PDF translation. You can also set `PAPER_READER_AI_API_KEY` or `DEEPSEEK_API_KEY`.",
+          "type": "string",
+          "default": ""
+        },
+        "paper-reader.ai.baseUrl": {
+          "markdownDescription": "OpenAI-compatible API base URL for full PDF translation.",
+          "type": "string",
+          "default": "https://api.deepseek.com"
+        },
+        "paper-reader.ai.model": {
+          "markdownDescription": "OpenAI-compatible model for full PDF translation.",
+          "type": "string",
+          "default": "deepseek-v4-flash"
+        },
+        "paper-reader.ai.translationPrompt": {
+          "markdownDescription": "System prompt used for full PDF translation.",
+          "type": "string",
+          "default": "你是科研论文 Markdown 正文翻译引擎。\n你会收到 JSON 数组，每个对象格式为 {\"id\":\"S0\",\"text\":\"英文正文\"}。\n请把每个 text 的英文学术正文准确翻译成中文。\n必须返回合法 JSON 数组，格式为 [{\"id\":\"S0\",\"translation\":\"译文\"}]。\n每个输入 id 必须且只能在输出中出现一次，不要遗漏、合并或新增 id。\n必须原样保留所有 {{PAPER_READER_INLINE_KEEP_0}} 和 {{PAPER_READER_KEEP_BLOCK_0}} 形式的占位符。\n必须保留公式、变量名、引用编号、人名、机构名、专有名词、缩写和数字。\n不要翻译占位符，不要添加解释，不要输出 Markdown 代码块，只输出 JSON 数组。"
+        },
+        "paper-reader.ai.translationConcurrency": {
+          "markdownDescription": "Maximum concurrent AI requests for full PDF translation. Increase for speed; lower it if other Paper Reader actions feel delayed while translating.",
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 20
+        },
+        "paper-reader.selectionTranslation.apiKey": {
+          "markdownDescription": "Optional OpenAI-compatible API key for PDF selection translation. Leave empty to inherit Paper Reader AI API key. You can also set `PAPER_READER_SELECTION_AI_API_KEY`.",
+          "type": "string",
+          "default": ""
+        },
+        "paper-reader.selectionTranslation.baseUrl": {
+          "markdownDescription": "Optional OpenAI-compatible API base URL for PDF selection translation. Leave empty to inherit Paper Reader AI base URL.",
+          "type": "string",
+          "default": ""
+        },
+        "paper-reader.selectionTranslation.model": {
+          "markdownDescription": "Optional model for PDF selection translation. Leave empty to inherit Paper Reader AI model.",
+          "type": "string",
+          "default": ""
+        },
+        "paper-reader.selectionTranslation.prompt": {
+          "markdownDescription": "System prompt used for PDF selection translation.",
+          "type": "string",
+          "default": "你是科研论文阅读助手。请把用户选中的英文学术论文片段准确翻译成中文。保留公式、变量、引用编号、人名、机构名、专有名词和缩写；不要添加解释；只输出译文。"
+        },
+        "paper-reader.output.directory": {
+          "markdownDescription": "Directory for generated translations, notes, and PDF annotations. Relative paths are resolved from the current workspace root.",
+          "type": "string",
+          "default": "paper-reader-output"
+        },
+        "paper-reader.mineru.executable": {
+          "markdownDescription": "MinerU CLI executable path. Use `mineru` when it is available on PATH.",
+          "type": "string",
+          "default": "D:\\\\anaconda\\\\envs\\\\paperreader\\\\Scripts\\\\mineru.exe"
+        },
+        "paper-reader.mineru.backend": {
+          "markdownDescription": "MinerU parsing backend.",
+          "type": "string",
+          "default": "hybrid-engine",
+          "enum": [
+            "pipeline",
+            "vlm-engine",
+            "hybrid-engine",
+            "vlm-http-client",
+            "hybrid-http-client"
+          ]
+        },
+        "paper-reader.mineru.effort": {
+          "markdownDescription": "MinerU Hybrid parsing effort. `high` enables higher-accuracy parsing with image/chart analysis support and may take longer. Applies to `hybrid-*` backends.",
+          "type": "string",
+          "default": "high",
+          "enum": [
+            "medium",
+            "high"
+          ]
+        },
+        "paper-reader.mineru.modelSource": {
+          "markdownDescription": "MinerU model source. Use `local` after pre-downloading models with `mineru-models-download`; use `auto` to let MinerU choose.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "huggingface",
+            "modelscope",
+            "local"
+          ]
+        },
+        "paper-reader.mineru.proxyUrl": {
+          "markdownDescription": "Proxy URL used by MinerU local backends while downloading model files. Clear this field to disable Paper Reader's MinerU download proxy override.",
+          "type": "string",
+          "default": "http://127.0.0.1:7897"
+        },
+        "paper-reader.mineru.method": {
+          "markdownDescription": "MinerU PDF parsing method.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "txt",
+            "ocr"
+          ]
+        },
+        "paper-reader.mineru.apiUrl": {
+          "markdownDescription": "Optional MinerU FastAPI base URL. Leave empty to let MinerU CLI start a temporary local service.",
+          "type": "string",
+          "default": ""
+        },
+        "paper-reader.mineru.lang": {
+          "markdownDescription": "Optional MinerU OCR language hint. This can improve OCR accuracy, mainly for pipeline backend.",
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "ch",
+            "ch_server",
+            "korean",
+            "ta",
+            "te",
+            "ka",
+            "th",
+            "el",
+            "arabic",
+            "east_slavic",
+            "cyrillic",
+            "devanagari"
+          ]
+        },
+        "paper-reader.mineru.formula": {
+          "markdownDescription": "Enable MinerU formula parsing. This can require substantially more memory on Windows.",
+          "type": "boolean",
+          "default": true
+        },
+        "paper-reader.mineru.table": {
+          "markdownDescription": "Enable MinerU table parsing.",
+          "type": "boolean",
+          "default": true
+        },
+        "paper-reader.mineru.imageAnalysis": {
+          "markdownDescription": "Enable MinerU image/chart analysis for VLM and hybrid backends. Hybrid medium effort disables image/chart analysis.",
+          "type": "boolean",
+          "default": true
+        },
+        "paper-reader.mineru.device": {
+          "markdownDescription": "MinerU compute device preference. `cuda` sets `CUDA_VISIBLE_DEVICES`; `cpu` disables CUDA for the MinerU process.",
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "cpu",
+            "cuda"
+          ]
+        },
+        "paper-reader.mineru.cudaDevice": {
+          "markdownDescription": "CUDA device id used when MinerU device is `cuda`.",
+          "type": "string",
+          "default": "0"
+        },
+        "paper-reader.mineru.renderThreads": {
+          "markdownDescription": "MinerU PDF render thread count. Lower values reduce peak memory usage.",
+          "type": "number",
+          "default": 1,
+          "minimum": 1
+        },
+        "paper-reader.mineru.processingWindowSize": {
+          "markdownDescription": "MinerU processing window size. Lower values reduce peak memory usage.",
+          "type": "number",
+          "default": 2,
+          "minimum": 1
+        },
+        "paper-reader.mineru.fallbackToPdfJs": {
+          "markdownDescription": "Fall back to the built-in PDF.js text extractor when MinerU is unavailable or fails.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "pretest": "npm run compile",
+    "test": "node ./out/src/test/runTest.js",
+    "test:unit": "npm run compile && node scripts/runUnitTests.js",
+    "lint": "eslint -c .eslintrc.json --ext .ts ./src",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@types/vscode": "^1.46.0",
+    "katex": "^0.17.0",
+    "pdfjs-dist": "^2.16.105",
+    "sql.js": "^1.14.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^12.12.21",
+    "@typescript-eslint/eslint-plugin": "^2.28.0",
+    "@typescript-eslint/parser": "^2.28.0",
+    "eslint": "^6.8.0",
+    "eslint-config-prettier": "^6.10.1",
+    "eslint-plugin-prettier": "^3.1.3",
+    "mocha": "^10.1.0",
+    "prettier": "^2.0.4",
+    "typescript": "^3.7.3",
+    "vsce": "^2.15.0",
+    "vscode-dts": "^0.3.1",
+    "vscode-test": "^1.3.0"
+  },
+  "extensionKind": [
+    "ui"
+  ]
+}
