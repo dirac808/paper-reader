@@ -21,6 +21,7 @@ import {
   MarkdownWysiwygProvider,
   openMarkdownWysiwyg,
 } from './markdownWysiwygProvider';
+import { normalizeMarkdownMathDelimiters } from './markdownCleanup';
 
 function getStableDocumentHash(document: vscode.TextDocument): string {
   const hash = createHash('sha256');
@@ -61,6 +62,46 @@ async function openAnnotationMarkdown(
     preserveFocus: false,
     viewColumn: vscode.ViewColumn.Beside,
   });
+}
+
+async function normalizeMarkdownMathFile(resource?: vscode.Uri): Promise<void> {
+  const uri = resource || vscode.window.activeTextEditor?.document.uri;
+  if (!uri || !/\.(md|markdown)$/i.test(uri.fsPath || uri.path)) {
+    vscode.window.showErrorMessage(
+      'Please select a Markdown file to normalize math delimiters.'
+    );
+    return;
+  }
+
+  const visibleEditor = vscode.window.visibleTextEditors.find(
+    (editor) => editor.document.uri.toString() === uri.toString()
+  );
+  const document =
+    visibleEditor?.document || (await vscode.workspace.openTextDocument(uri));
+  const result = normalizeMarkdownMathDelimiters(document.getText());
+  if (result.changedBlocks === 0) {
+    vscode.window.showInformationMessage(
+      'Paper Reader found no \\[...\\] display math blocks to normalize.'
+    );
+    return;
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(
+    document.uri,
+    new vscode.Range(0, 0, document.lineCount, 0),
+    result.markdown
+  );
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    throw new Error('VS Code rejected the Markdown math normalization edit.');
+  }
+  await document.save();
+  vscode.window.showInformationMessage(
+    `Paper Reader normalized ${result.changedBlocks} Markdown math block${
+      result.changedBlocks === 1 ? '' : 's'
+    } to $$.`
+  );
 }
 
 export function activate(
@@ -174,6 +215,22 @@ export function activate(
         } catch (error) {
           vscode.window.showErrorMessage(
             `Unable to open Paper Reader Markdown editor: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'dipe-paper-reader.normalizeMarkdownMath',
+      async (resource?: vscode.Uri) => {
+        try {
+          await normalizeMarkdownMathFile(resource);
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Unable to normalize Markdown math: ${
               error instanceof Error ? error.message : String(error)
             }`
           );

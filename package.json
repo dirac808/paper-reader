@@ -26,6 +26,7 @@
     "onCommand:dipe-paper-reader.testSendToCodex",
     "onCommand:dipe-paper-reader.sendSelectionToCodex",
     "onCommand:dipe-paper-reader.openMarkdownWysiwyg",
+    "onCommand:dipe-paper-reader.normalizeMarkdownMath",
     "onCommand:dipe-paper-reader.selfCheck",
     "onCommand:dipe-paper-reader.openConfiguration",
     "onView:paper-reader.configurationView",
@@ -106,6 +107,10 @@
         "title": "Paper Reader: Open Markdown"
       },
       {
+        "command": "dipe-paper-reader.normalizeMarkdownMath",
+        "title": "Paper Reader: Normalize Markdown Math"
+      },
+      {
         "command": "dipe-paper-reader.selfCheck",
         "title": "Paper Reader: Self Check"
       },
@@ -141,6 +146,16 @@
           "command": "dipe-paper-reader.translateCurrentPdf",
           "when": "resourceFilename =~ /\\.pdf$/i",
           "group": "navigation@2"
+        },
+        {
+          "command": "dipe-paper-reader.openMarkdownWysiwyg",
+          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dipe-paper-reader.normalizeMarkdownMath",
+          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
+          "group": "navigation@4"
         }
       ],
       "editor/context": [
@@ -160,23 +175,6 @@
           "command": "dipe-paper-reader.openMarkdownWysiwyg",
           "when": "resourceExtname == '.md' || resourceExtname == '.markdown'",
           "group": "navigation@-2"
-        }
-      ],
-      "explorer/context": [
-        {
-          "command": "dipe-paper-reader.openPdf",
-          "when": "resourceFilename =~ /\\.pdf$/i",
-          "group": "navigation"
-        },
-        {
-          "command": "dipe-paper-reader.translateCurrentPdf",
-          "when": "resourceFilename =~ /\\.pdf$/i",
-          "group": "navigation@2"
-        },
-        {
-          "command": "dipe-paper-reader.openMarkdownWysiwyg",
-          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
-          "group": "navigation@3"
         }
       ]
     },

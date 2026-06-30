@@ -209,11 +209,43 @@ async function testMarkdownAnnotationStore() {
   }
 }
 
+function testNormalizeMarkdownMathDelimiters() {
+  const { normalizeMarkdownMathDelimiters } = require('../out/src/markdownCleanup');
+  const input = [
+    '# Paper',
+    '',
+    '\\[',
+    'a+b=c',
+    '\\]',
+    '',
+    'Text',
+    '',
+    '  \\[ x = y \\]',
+    '',
+    '```md',
+    '\\[',
+    'do not touch',
+    '\\]',
+    '```',
+  ].join('\n');
+
+  const result = normalizeMarkdownMathDelimiters(input);
+  assert.strictEqual(result.changedBlocks, 2);
+  assert.ok(result.markdown.includes('$$\na+b=c\n$$'));
+  assert.ok(result.markdown.includes('  $$\nx = y\n  $$'));
+  assert.ok(result.markdown.includes('```md\n\\[\ndo not touch\n\\]\n```'));
+
+  const crlf = '\\[\r\nz\r\n\\]\r\n';
+  const crlfResult = normalizeMarkdownMathDelimiters(crlf);
+  assert.strictEqual(crlfResult.markdown, '$$\r\nz\r\n$$\r\n');
+}
+
 async function main() {
   await testMissingTranslationRecovery();
   await testMaximumTranslationConcurrency();
   await testMinerUOriginalMarkdownCache();
   await testMarkdownAnnotationStore();
+  testNormalizeMarkdownMathDelimiters();
   console.log('Unit tests passed.');
 }
 
