@@ -15,6 +15,7 @@ import { NoteStore } from './noteStore';
 import { translatePdfToMarkdownWindow } from './paperTranslation';
 import { PdfCustomProvider } from './pdfProvider';
 import { extendMarkdownItWithMath } from './markdownMath';
+import { openMarkdownWithPreview } from './markdownPreview';
 
 export function activate(
   context: vscode.ExtensionContext
@@ -73,6 +74,22 @@ export function activate(
           PdfCustomProvider.viewType,
           vscode.ViewColumn.Active
         );
+      }
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'dipe-paper-reader.openMarkdownWithPreview',
+      async (resource?: vscode.Uri) => {
+        try {
+          await openMarkdownWithPreview(resource);
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Unable to open Markdown preview: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
       }
     )
   );

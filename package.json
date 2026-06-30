@@ -23,6 +23,7 @@
   "activationEvents": [
     "onCustomEditor:dipe.paperReader",
     "onCommand:dipe-paper-reader.openPdf",
+    "onCommand:dipe-paper-reader.openMarkdownWithPreview",
     "onCommand:dipe-paper-reader.testSendToCodex",
     "onCommand:dipe-paper-reader.sendSelectionToCodex",
     "onCommand:dipe-paper-reader.selfCheck",
@@ -43,6 +44,9 @@
     "markdown.markdownItPlugins": true,
     "markdown.previewStyles": [
       "./node_modules/katex/dist/katex.min.css"
+    ],
+    "markdown.previewScripts": [
+      "./media/markdown-preview.js"
     ],
     "viewsContainers": {
       "activitybar": [
@@ -78,6 +82,10 @@
       {
         "command": "dipe-paper-reader.openPdf",
         "title": "Paper Reader: Open Current PDF"
+      },
+      {
+        "command": "dipe-paper-reader.openMarkdownWithPreview",
+        "title": "Paper Reader: Open Markdown With Preview"
       },
       {
         "command": "dipe-paper-reader.testSendToCodex",
@@ -123,6 +131,11 @@
           "command": "dipe-paper-reader.translateCurrentPdf",
           "when": "resourceFilename =~ /\\.pdf$/i",
           "group": "navigation@2"
+        },
+        {
+          "command": "dipe-paper-reader.openMarkdownWithPreview",
+          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
+          "group": "navigation"
         }
       ],
       "editor/context": [

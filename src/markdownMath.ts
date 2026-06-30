@@ -250,8 +250,13 @@ export function extendMarkdownItWithMath(md: MarkdownIt): MarkdownIt {
     createMathInlineRule()
   );
   md.renderer.rules['paper_reader_math_block'] = (tokens, index): string =>
-    `<p>${renderMath(tokens[index].content, true)}</p>\n`;
+    `<p class="paper-reader-math-block" data-source-line="${
+      tokens[index].map ? tokens[index].map?.[0] + 1 : ''
+    }">${renderMath(tokens[index].content, true)}</p>\n`;
   md.renderer.rules['paper_reader_math_inline'] = (tokens, index): string =>
-    renderMath(tokens[index].content, false);
+    `<span class="paper-reader-math-inline">${renderMath(
+      tokens[index].content,
+      false
+    )}</span>`;
   return md;
 }
