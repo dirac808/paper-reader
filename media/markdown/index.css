@@ -245,14 +245,14 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-md-note-layer {
-    position: fixed;
+    position: absolute;
     inset: 0;
     z-index: 20;
     pointer-events: none;
 }
 
 .paper-reader-md-note-anchor {
-    position: fixed;
+    position: absolute;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -278,12 +278,18 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-md-note-highlight {
-    position: fixed;
+    position: absolute;
     min-height: 1.2em;
     border-radius: 3px;
     background: rgba(245, 215, 110, 0.26);
     border-bottom: 1px solid rgba(245, 215, 110, 0.58);
     pointer-events: none;
+}
+
+.vditor-content,
+.vditor-wysiwyg,
+.vditor-ir {
+    position: relative;
 }
 
 .vditor-code-block--cm .cm-scroller,

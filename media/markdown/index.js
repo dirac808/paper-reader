@@ -1,6 +1,8 @@
 import { getToolbar, bindShortcut, createContextMenu, setAIAvailable } from "./util.js";
 import { mapVscodeLanguageToVditorLang } from "./lang.js";
 
+let mathLineWrapObserver = null;
+
 const enableMathEditorLineWrap = () => {
   const apply = () => {
     document
@@ -29,6 +31,7 @@ const enableMathEditorLineWrap = () => {
       });
   };
   apply();
+  if (mathLineWrapObserver) return;
   const observer = new MutationObserver(() => {
     window.requestAnimationFrame(apply);
   });
@@ -36,11 +39,33 @@ const enableMathEditorLineWrap = () => {
     childList: true,
     subtree: true,
   });
+  mathLineWrapObserver = observer;
 };
 
 const normalizeText = (text) => (text || "").replace(/\s+/g, " ").trim();
 let currentMarkdownAnnotations = [];
-let annotationRenderTimer = 0;
+let annotationRenderFrame = 0;
+let mathRefreshTimer = 0;
+
+const normalizeDisplayMathDelimiters = (markdown = "") => {
+  return (markdown || "")
+    .replace(
+      /(^|\n)([ \t]*)\\\[\s*\n([\s\S]*?)\n[ \t]*\\\]([ \t]*(?=\n|$))/g,
+      (_match, lineStart, indent, body, suffix) => `${lineStart}${indent}$$\n${body.trim()}\n${indent}$$${suffix}`,
+    )
+    .replace(
+      /(^|\n)([ \t]*)\\\[\s*([^\n]*?)\s*\\\]([ \t]*(?=\n|$))/g,
+      (_match, lineStart, indent, body, suffix) => `${lineStart}${indent}$$\n${body.trim()}\n${indent}$$${suffix}`,
+    );
+};
+
+const getEditorRoot = () => document.querySelector("#vditor .vditor-wysiwyg, #vditor .vditor-ir, #vditor");
+
+const getAnnotationLayerHost = () => {
+  const root = getEditorRoot();
+  if (!root) return null;
+  return root.closest(".vditor-content") || root;
+};
 
 const collectTextNodes = (root) => {
   const nodes = [];
@@ -128,11 +153,17 @@ const clearMarkdownAnnotationMarks = () => {
 const renderMarkdownAnnotations = (annotations = []) => {
   currentMarkdownAnnotations = annotations || [];
   clearMarkdownAnnotationMarks();
-  const root = document.querySelector("#vditor .vditor-wysiwyg, #vditor .vditor-ir, #vditor");
-  if (!root) return;
+  const root = getEditorRoot();
+  const layerHost = getAnnotationLayerHost();
+  if (!root || !layerHost) return;
   const layer = document.createElement("div");
   layer.className = "paper-reader-md-note-layer";
-  document.body.appendChild(layer);
+  layer.style.width = `${Math.max(layerHost.scrollWidth, layerHost.clientWidth)}px`;
+  layer.style.height = `${Math.max(layerHost.scrollHeight, layerHost.clientHeight)}px`;
+  layerHost.appendChild(layer);
+  const hostRect = layerHost.getBoundingClientRect();
+  const hostScrollLeft = layerHost.scrollLeft || 0;
+  const hostScrollTop = layerHost.scrollTop || 0;
   const textNodes = collectTextNodes(root);
   const fullText = textNodes.map((node) => node.textContent || "").join("");
 
@@ -149,8 +180,8 @@ const renderMarkdownAnnotations = (annotations = []) => {
       if (itemRect.width === 0 || itemRect.height === 0) return;
       const highlight = document.createElement("span");
       highlight.className = "paper-reader-md-note-highlight";
-      highlight.style.left = `${itemRect.left}px`;
-      highlight.style.top = `${itemRect.top}px`;
+      highlight.style.left = `${itemRect.left - hostRect.left + hostScrollLeft}px`;
+      highlight.style.top = `${itemRect.top - hostRect.top + hostScrollTop}px`;
       highlight.style.width = `${itemRect.width}px`;
       highlight.style.height = `${itemRect.height}px`;
       layer.appendChild(highlight);
@@ -167,18 +198,45 @@ const renderMarkdownAnnotations = (annotations = []) => {
       event.stopPropagation();
       handler.emit("openMarkdownAnnotationNote", annotation.id);
     });
-    anchor.style.left = `${Math.min(window.innerWidth - 24, rect.right + 4)}px`;
-    anchor.style.top = `${Math.max(4, rect.top + (rect.height - 18) / 2)}px`;
+    anchor.style.left = `${rect.right - hostRect.left + hostScrollLeft + 4}px`;
+    anchor.style.top = `${rect.top - hostRect.top + hostScrollTop + (rect.height - 18) / 2}px`;
     layer.appendChild(anchor);
   });
 };
 
 const scheduleMarkdownAnnotationRender = () => {
-  window.clearTimeout(annotationRenderTimer);
-  annotationRenderTimer = window.setTimeout(() => {
+  if (annotationRenderFrame) return;
+  annotationRenderFrame = window.requestAnimationFrame(() => {
+    annotationRenderFrame = 0;
     renderMarkdownAnnotations(currentMarkdownAnnotations);
-  }, 80);
+  });
 };
+
+const refreshRenderedMath = (editor, markdownConfig, rootPath) => {
+  const root = document.getElementById("vditor");
+  if (!root) return;
+  root
+    .querySelectorAll(".language-math[data-math], .language-math.vditor-reset--error[data-math]")
+    .forEach((node) => {
+      node.removeAttribute("data-math");
+      node.classList.remove("vditor-reset--error");
+    });
+  window.Vditor?.mathRender?.(root, {
+    cdn: rootPath,
+    math: {
+      macros: markdownConfig?.math?.macros ?? {},
+    },
+  });
+  enableMathEditorLineWrap();
+  scheduleMarkdownAnnotationRender();
+};
+
+const scheduleMathRefresh = (editor, markdownConfig, rootPath) => {
+  window.clearTimeout(mathRefreshTimer);
+  mathRefreshTimer = window.setTimeout(() => refreshRenderedMath(editor, markdownConfig, rootPath), 180);
+};
+
+const getNormalizedEditorValue = (editor) => normalizeDisplayMathDelimiters(editor?.getValue?.() || "");
 
 handler.on("open", async (md) => {
   const { content, rootPath, documentCacheId, pendingFragment, config } = md;
@@ -190,7 +248,7 @@ handler.on("open", async (md) => {
     document.body.classList.add('is-web')
   }
   const editor = new Vditor('vditor', {
-    value: content,
+    value: normalizeDisplayMathDelimiters(content),
     cdn: rootPath,
     height: '100%',
     outline: {
@@ -208,8 +266,9 @@ handler.on("open", async (md) => {
     lang: mapVscodeLanguageToVditorLang(language),
     tab: '\t',
     toolbar: await getToolbar(rootPath, () => {
-      handler.emit('doSave', editor?.getValue());
-      editor?.markSaved();
+      const normalizedContent = getNormalizedEditorValue(editor);
+      handler.emit('doSave', normalizedContent);
+      editor?.markSaved(normalizedContent);
     }),
     onAboutOpen: () => handler.emit('openAbout'),
     onSponsorLogoClick: () => handler.emit('openSponsor'),
@@ -252,7 +311,24 @@ handler.on("open", async (md) => {
       handler.emit('editViewerSettings', editor.exportViewerSettings())
     },
     input(content) {
-      handler.emit("save", content)
+      const normalizedContent = normalizeDisplayMathDelimiters(content);
+      handler.emit("save", normalizedContent)
+      if (normalizedContent !== content && !document.querySelector(".cm-editor.cm-focused")) {
+        const scrollHost = getAnnotationLayerHost();
+        const scrollTop = scrollHost?.scrollTop || 0;
+        const scrollLeft = scrollHost?.scrollLeft || 0;
+        window.setTimeout(() => {
+          if (normalizeDisplayMathDelimiters(editor.getValue()) === normalizedContent) {
+            editor.setValue(normalizedContent);
+            editor.markSaved(normalizedContent);
+            if (scrollHost) {
+              scrollHost.scrollTop = scrollTop;
+              scrollHost.scrollLeft = scrollLeft;
+            }
+          }
+        }, 240);
+      }
+      scheduleMathRefresh(editor, markdown, rootPath);
     },
     upload: {
       url: '/image',
@@ -285,6 +361,9 @@ handler.on("open", async (md) => {
       }
     },
     preview: {
+      markdown: {
+        mathBlockPreview: true,
+      },
       math: {
         macros: markdown?.math?.macros ?? {},
       },
@@ -324,8 +403,9 @@ handler.on("open", async (md) => {
         if (editor.getValue() === content) {
           return;
         }
-        editor.setValue(content);
+        editor.setValue(normalizeDisplayMathDelimiters(content));
         editor.markSaved();
+        scheduleMathRefresh(editor, markdown, rootPath);
         handler.emit("loadMarkdownAnnotations");
       })
       handler.on("markdownAnnotations", (annotations) => {
@@ -351,8 +431,11 @@ handler.on("open", async (md) => {
         editor.scrollToBlock(pendingFragment);
       }
       enableMathEditorLineWrap();
+      const annotationLayerHost = getAnnotationLayerHost();
+      annotationLayerHost?.addEventListener("scroll", scheduleMarkdownAnnotationRender, { passive: true });
       window.addEventListener("scroll", scheduleMarkdownAnnotationRender, true);
       window.addEventListener("resize", scheduleMarkdownAnnotationRender);
+      scheduleMathRefresh(editor, markdown, rootPath);
       handler.emit("loadMarkdownAnnotations");
     }
   })
