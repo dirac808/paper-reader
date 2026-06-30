@@ -42,6 +42,18 @@ export type PdfAnnotationRecord = {
   exportedPath?: string;
 };
 
+export type MarkdownAnnotationRecord = {
+  id: number;
+  documentUri: string;
+  documentHash: string;
+  selectedText: string;
+  prefixText: string;
+  suffixText: string;
+  content: string;
+  updatedAt: string;
+  exportedPath?: string;
+};
+
 type SqlStatement = {
   bind(values?: unknown[]): boolean;
   step(): boolean;
@@ -218,6 +230,22 @@ export class NoteStore {
 
       CREATE INDEX IF NOT EXISTS idx_pdf_annotations_document
         ON pdf_annotations(document_hash, page);
+
+      CREATE TABLE IF NOT EXISTS markdown_annotations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        document_uri TEXT NOT NULL,
+        document_hash TEXT NOT NULL,
+        selected_text TEXT NOT NULL DEFAULT '',
+        prefix_text TEXT NOT NULL DEFAULT '',
+        suffix_text TEXT NOT NULL DEFAULT '',
+        content TEXT NOT NULL,
+        exported_path TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_markdown_annotations_document
+        ON markdown_annotations(document_hash);
     `);
     this.migrate();
     this.persist();
@@ -237,6 +265,16 @@ export class NoteStore {
     if (!hasColumn(this.db, 'pdf_annotations', 'exported_path')) {
       this.db.run(
         "ALTER TABLE pdf_annotations ADD COLUMN exported_path TEXT NOT NULL DEFAULT ''"
+      );
+    }
+    if (!hasColumn(this.db, 'markdown_annotations', 'document_uri')) {
+      this.db.run(
+        "ALTER TABLE markdown_annotations ADD COLUMN document_uri TEXT NOT NULL DEFAULT ''"
+      );
+    }
+    if (!hasColumn(this.db, 'markdown_annotations', 'exported_path')) {
+      this.db.run(
+        "ALTER TABLE markdown_annotations ADD COLUMN exported_path TEXT NOT NULL DEFAULT ''"
       );
     }
   }
@@ -277,6 +315,36 @@ export class NoteStore {
       : '';
     const content = [
       `# ${sanitizeFileName(documentTitle)} · Page ${annotation.page}`,
+      '',
+      annotation.content,
+      selectedText,
+    ].join('\n');
+
+    const filePath = path.join(directory, filename);
+    fs.writeFileSync(filePath, content, 'utf8');
+    return filePath;
+  }
+
+  private exportMarkdownAnnotationFile(
+    annotation: MarkdownAnnotationRecord,
+    documentTitle: string
+  ): string {
+    const directory = path.join(
+      path.dirname(this.notesDirectory),
+      'markdown-annotations'
+    );
+    fs.mkdirSync(directory, { recursive: true });
+
+    const filename = `${sanitizeFileName(documentTitle)}-note-${
+      annotation.id
+    }.md`;
+    const selectedText = annotation.selectedText.trim()
+      ? `\n\n## Source Selection\n\n> ${annotation.selectedText
+          .trim()
+          .replace(/\r?\n/g, '\n> ')}\n`
+      : '';
+    const content = [
+      `# ${sanitizeFileName(documentTitle)} · Markdown Note ${annotation.id}`,
       '',
       annotation.content,
       selectedText,
@@ -623,6 +691,194 @@ export class NoteStore {
     }
     this.db.run(
       'DELETE FROM pdf_annotations WHERE document_hash = ? AND id = ?',
+      [documentHash, id]
+    );
+    this.persist();
+  }
+
+  private selectMarkdownAnnotations(
+    documentHash: string
+  ): MarkdownAnnotationRecord[] {
+    return rows<MarkdownAnnotationRecord>(
+      this.db,
+      `SELECT
+        id,
+        document_uri as documentUri,
+        document_hash as documentHash,
+        selected_text as selectedText,
+        prefix_text as prefixText,
+        suffix_text as suffixText,
+        content,
+        updated_at as updatedAt,
+        exported_path as exportedPath
+      FROM markdown_annotations
+      WHERE document_hash = ?
+      ORDER BY updated_at DESC`,
+      [documentHash]
+    );
+  }
+
+  private syncMarkdownAnnotationFiles(
+    documentHash: string,
+    documentTitle?: string
+  ): void {
+    const annotations = this.selectMarkdownAnnotations(documentHash);
+    let changed = false;
+
+    for (const annotation of annotations) {
+      if (annotation.exportedPath) {
+        if (!fs.existsSync(annotation.exportedPath)) {
+          this.db.run('DELETE FROM markdown_annotations WHERE id = ?', [
+            annotation.id,
+          ]);
+          changed = true;
+        }
+        continue;
+      }
+
+      if (documentTitle) {
+        const exportedPath = this.exportMarkdownAnnotationFile(
+          annotation,
+          documentTitle
+        );
+        this.db.run(
+          'UPDATE markdown_annotations SET exported_path = ? WHERE id = ?',
+          [exportedPath, annotation.id]
+        );
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      this.persist();
+    }
+  }
+
+  public getMarkdownAnnotations(
+    documentHash: string,
+    documentTitle?: string
+  ): MarkdownAnnotationRecord[] {
+    this.syncMarkdownAnnotationFiles(documentHash, documentTitle);
+    return this.selectMarkdownAnnotations(documentHash);
+  }
+
+  public getMarkdownAnnotation(
+    documentHash: string,
+    id: number,
+    documentTitle?: string
+  ): MarkdownAnnotationRecord | undefined {
+    this.syncMarkdownAnnotationFiles(documentHash, documentTitle);
+    return row<MarkdownAnnotationRecord>(
+      this.db,
+      `SELECT
+        id,
+        document_uri as documentUri,
+        document_hash as documentHash,
+        selected_text as selectedText,
+        prefix_text as prefixText,
+        suffix_text as suffixText,
+        content,
+        updated_at as updatedAt,
+        exported_path as exportedPath
+      FROM markdown_annotations
+      WHERE document_hash = ? AND id = ?`,
+      [documentHash, id]
+    );
+  }
+
+  public saveMarkdownAnnotation(input: {
+    documentUri: string;
+    documentHash: string;
+    documentTitle?: string;
+    selectedText?: string;
+    prefixText?: string;
+    suffixText?: string;
+    content: string;
+    id?: number;
+  }): MarkdownAnnotationRecord {
+    const now = new Date().toISOString();
+    const selectedText = (input.selectedText || '').trim();
+    const content = input.content.trim();
+    if (!selectedText) {
+      throw new Error('Markdown annotation selection cannot be empty.');
+    }
+    if (!content) {
+      throw new Error('Markdown annotation content cannot be empty.');
+    }
+
+    if (input.id) {
+      this.db.run(
+        `UPDATE markdown_annotations
+        SET document_uri = ?, selected_text = ?, prefix_text = ?, suffix_text = ?, content = ?, updated_at = ?
+        WHERE id = ? AND document_hash = ?`,
+        [
+          input.documentUri,
+          selectedText,
+          input.prefixText || '',
+          input.suffixText || '',
+          content,
+          now,
+          input.id,
+          input.documentHash,
+        ]
+      );
+    } else {
+      this.db.run(
+        `INSERT INTO markdown_annotations
+        (document_uri, document_hash, selected_text, prefix_text, suffix_text, content, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          input.documentUri,
+          input.documentHash,
+          selectedText,
+          input.prefixText || '',
+          input.suffixText || '',
+          content,
+          now,
+          now,
+        ]
+      );
+      const created = row<{ id: number }>(
+        this.db,
+        'SELECT last_insert_rowid() as id'
+      );
+      input.id = created ? created.id : undefined;
+    }
+
+    if (!input.id) {
+      throw new Error('Unable to save Markdown annotation.');
+    }
+
+    this.persist();
+    const annotation = this.getMarkdownAnnotation(input.documentHash, input.id);
+    if (!annotation) {
+      throw new Error('Unable to load saved Markdown annotation.');
+    }
+    const exportedPath = this.exportMarkdownAnnotationFile(
+      annotation,
+      input.documentTitle ||
+        path.basename(input.documentUri) ||
+        input.documentHash
+    );
+    this.db.run(
+      'UPDATE markdown_annotations SET exported_path = ? WHERE id = ?',
+      [exportedPath, annotation.id]
+    );
+    this.persist();
+    return { ...annotation, exportedPath };
+  }
+
+  public deleteMarkdownAnnotation(documentHash: string, id: number): void {
+    const annotation = row<{ exportedPath: string }>(
+      this.db,
+      'SELECT exported_path as exportedPath FROM markdown_annotations WHERE document_hash = ? AND id = ?',
+      [documentHash, id]
+    );
+    if (annotation?.exportedPath && fs.existsSync(annotation.exportedPath)) {
+      fs.unlinkSync(annotation.exportedPath);
+    }
+    this.db.run(
+      'DELETE FROM markdown_annotations WHERE document_hash = ? AND id = ?',
       [documentHash, id]
     );
     this.persist();

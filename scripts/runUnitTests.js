@@ -163,10 +163,57 @@ async function testMinerUOriginalMarkdownCache() {
   assert.strictEqual(stale, undefined);
 }
 
+async function testMarkdownAnnotationStore() {
+  const { NoteStore } = require('../out/src/noteStore');
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paper-reader-md-note-test-'));
+  const originalWorkspaceFolders = module.require('vscode').workspace.workspaceFolders;
+  module.require('vscode').workspace.workspaceFolders = [
+    {
+      uri: {
+        fsPath: tempRoot,
+        path: tempRoot.replace(/\\/g, '/'),
+      },
+    },
+  ];
+
+  try {
+    const store = await NoteStore.create({
+      globalStoragePath: path.join(tempRoot, 'storage'),
+      extensionPath: path.resolve(__dirname, '..'),
+    });
+    const annotation = store.saveMarkdownAnnotation({
+      documentUri: 'file:///paper.md',
+      documentHash: 'doc-hash',
+      documentTitle: 'paper.md',
+      selectedText: 'Important sentence.',
+      prefixText: 'Before ',
+      suffixText: ' After',
+      content: '## Note\n\n',
+    });
+
+    assert.ok(annotation.id > 0);
+    assert.ok(annotation.exportedPath);
+    assert.ok(fs.existsSync(annotation.exportedPath));
+    assert.ok(
+      fs.readFileSync(annotation.exportedPath, 'utf8').includes('Important sentence.')
+    );
+
+    const annotations = store.getMarkdownAnnotations('doc-hash', 'paper.md');
+    assert.strictEqual(annotations.length, 1);
+    assert.strictEqual(annotations[0].selectedText, 'Important sentence.');
+
+    fs.unlinkSync(annotation.exportedPath);
+    assert.strictEqual(store.getMarkdownAnnotations('doc-hash', 'paper.md').length, 0);
+  } finally {
+    module.require('vscode').workspace.workspaceFolders = originalWorkspaceFolders;
+  }
+}
+
 async function main() {
   await testMissingTranslationRecovery();
   await testMaximumTranslationConcurrency();
   await testMinerUOriginalMarkdownCache();
+  await testMarkdownAnnotationStore();
   console.log('Unit tests passed.');
 }
 

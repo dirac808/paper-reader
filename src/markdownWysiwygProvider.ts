@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { sendMarkdownTextToCodex } from './codexBridge';
 import { NoteStore } from './noteStore';
@@ -7,6 +8,12 @@ import { NoteStore } from './noteStore';
 type WebviewMessage = {
   type: string;
   content?: unknown;
+};
+
+type MarkdownSelectionAnchor = {
+  selectedText?: unknown;
+  prefixText?: unknown;
+  suffixText?: unknown;
 };
 
 type MarkdownOpenPayload = {
@@ -156,6 +163,43 @@ async function writeDroppedImage(
   await vscode.commands.executeCommand('editor.action.clipboardPasteAction');
 }
 
+function getDocumentHash(document: vscode.TextDocument): string {
+  const hash = createHash('sha256');
+  hash.update(document.uri.toString());
+  return hash.digest('hex');
+}
+
+function getDocumentTitle(document: vscode.TextDocument): string {
+  return path.basename(document.uri.fsPath || document.uri.path);
+}
+
+async function openAnnotationMarkdown(
+  exportedPath: string | undefined
+): Promise<void> {
+  if (!exportedPath) {
+    throw new Error('Markdown note file was not created.');
+  }
+
+  const noteDocument = await vscode.workspace.openTextDocument(
+    vscode.Uri.file(exportedPath)
+  );
+  await vscode.window.showTextDocument(noteDocument, {
+    preview: false,
+    preserveFocus: false,
+    viewColumn: vscode.ViewColumn.Beside,
+  });
+
+  try {
+    await vscode.commands.executeCommand(
+      'workbench.action.moveEditorToNewWindow'
+    );
+  } catch {
+    vscode.window.showInformationMessage(
+      'Markdown note opened in a Markdown editor.'
+    );
+  }
+}
+
 export class MarkdownWysiwygProvider
   implements vscode.CustomTextEditorProvider {
   public static readonly viewType = MARKDOWN_VIEW_TYPE;
@@ -225,6 +269,17 @@ export class MarkdownWysiwygProvider
       config: getMarkdownConfig(),
     });
 
+    const sendMarkdownAnnotations = async (): Promise<void> => {
+      const store = await this.getNoteStore();
+      emit(
+        'markdownAnnotations',
+        store.getMarkdownAnnotations(
+          getDocumentHash(document),
+          getDocumentTitle(document)
+        )
+      );
+    };
+
     const documentSubscription = vscode.workspace.onDidChangeTextDocument(
       (event) => {
         if (
@@ -277,32 +332,60 @@ export class MarkdownWysiwygProvider
             );
             break;
           case 'addSelectionToNotes':
-            if (
-              typeof message.content !== 'string' ||
-              !message.content.trim()
-            ) {
+            if (!message.content || typeof message.content !== 'object') {
               vscode.window.showErrorMessage(
-                'Please select Markdown text to add to Paper Reader notes.'
+                'Please select Markdown text to create a Paper Reader note.'
               );
               break;
             }
-            (await this.getNoteStore()).appendToDefaultNote(
-              [
-                `## From ${vscode.workspace.asRelativePath(
-                  document.uri,
-                  false
-                )}`,
-                '',
-                message.content
-                  .trim()
-                  .split(/\r?\n/)
-                  .map((line) => `> ${line}`)
-                  .join('\n'),
-              ].join('\n')
+            {
+              const anchor = message.content as MarkdownSelectionAnchor;
+              const selectedText = String(anchor.selectedText || '').trim();
+              if (!selectedText) {
+                vscode.window.showErrorMessage(
+                  'Please select Markdown text to create a Paper Reader note.'
+                );
+                break;
+              }
+              const store = await this.getNoteStore();
+              const annotation = store.saveMarkdownAnnotation({
+                documentUri: document.uri.toString(),
+                documentHash: getDocumentHash(document),
+                documentTitle: getDocumentTitle(document),
+                selectedText,
+                prefixText: String(anchor.prefixText || ''),
+                suffixText: String(anchor.suffixText || ''),
+                content: '## Note\n\n',
+              });
+              await openAnnotationMarkdown(annotation.exportedPath);
+              await sendMarkdownAnnotations();
+              vscode.window.showInformationMessage('Markdown note created.');
+            }
+            break;
+          case 'loadMarkdownAnnotations':
+            await sendMarkdownAnnotations();
+            break;
+          case 'openMarkdownAnnotationNote':
+            {
+              const store = await this.getNoteStore();
+              const annotation = store.getMarkdownAnnotation(
+                getDocumentHash(document),
+                Number(message.content),
+                getDocumentTitle(document)
+              );
+              if (!annotation) {
+                await sendMarkdownAnnotations();
+                break;
+              }
+              await openAnnotationMarkdown(annotation.exportedPath);
+            }
+            break;
+          case 'deleteMarkdownAnnotation':
+            (await this.getNoteStore()).deleteMarkdownAnnotation(
+              getDocumentHash(document),
+              Number(message.content)
             );
-            vscode.window.showInformationMessage(
-              'Selection added to Paper Reader notes.'
-            );
+            await sendMarkdownAnnotations();
             break;
           case 'insertImage':
             vscode.window.showInformationMessage(

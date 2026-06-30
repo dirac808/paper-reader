@@ -34,6 +34,137 @@ const enableMathEditorLineWrap = () => {
   });
 };
 
+const normalizeText = (text) => (text || "").replace(/\s+/g, " ").trim();
+let currentMarkdownAnnotations = [];
+let annotationRenderTimer = 0;
+
+const collectTextNodes = (root) => {
+  const nodes = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!normalizeText(node.textContent)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      if (node.parentElement?.closest?.(".paper-reader-md-note-anchor, script, style")) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node);
+    node = walker.nextNode();
+  }
+  return nodes;
+};
+
+const scoreTextAnchor = (fullText, index, annotation) => {
+  const selectedText = annotation?.selectedText || "";
+  const prefixText = annotation?.prefixText || "";
+  const suffixText = annotation?.suffixText || "";
+  let score = 0;
+  if (prefixText && fullText.slice(Math.max(0, index - prefixText.length), index) === prefixText) {
+    score += prefixText.length;
+  }
+  if (
+    suffixText &&
+    fullText.slice(index + selectedText.length, index + selectedText.length + suffixText.length) === suffixText
+  ) {
+    score += suffixText.length;
+  }
+  return score;
+};
+
+const findBestTextIndex = (fullText, annotation) => {
+  const selectedText = annotation?.selectedText || "";
+  if (!selectedText) return -1;
+  let bestIndex = -1;
+  let bestScore = -1;
+  let index = fullText.indexOf(selectedText);
+  while (index >= 0) {
+    const score = scoreTextAnchor(fullText, index, annotation);
+    if (score > bestScore) {
+      bestIndex = index;
+      bestScore = score;
+    }
+    index = fullText.indexOf(selectedText, index + Math.max(1, selectedText.length));
+  }
+  return bestIndex;
+};
+
+const createRangeFromTextOffsets = (textNodes, start, end) => {
+  const range = document.createRange();
+  let cursor = 0;
+  let started = false;
+
+  for (const node of textNodes) {
+    const length = (node.textContent || "").length;
+    const nodeStart = cursor;
+    const nodeEnd = cursor + length;
+
+    if (!started && start >= nodeStart && start <= nodeEnd) {
+      range.setStart(node, Math.min(length, start - nodeStart));
+      started = true;
+    }
+    if (started && end >= nodeStart && end <= nodeEnd) {
+      range.setEnd(node, Math.min(length, end - nodeStart));
+      return range;
+    }
+    cursor = nodeEnd;
+  }
+
+  return null;
+};
+
+const clearMarkdownAnnotationMarks = () => {
+  document.querySelectorAll(".paper-reader-md-note-layer").forEach((node) => node.remove());
+};
+
+const renderMarkdownAnnotations = (annotations = []) => {
+  currentMarkdownAnnotations = annotations || [];
+  clearMarkdownAnnotationMarks();
+  const root = document.querySelector("#vditor .vditor-wysiwyg, #vditor .vditor-ir, #vditor");
+  if (!root) return;
+  const layer = document.createElement("div");
+  layer.className = "paper-reader-md-note-layer";
+  document.body.appendChild(layer);
+
+  annotations.forEach((annotation) => {
+    const selectedText = annotation?.selectedText || "";
+    const textNodes = collectTextNodes(root);
+    const fullText = textNodes.map((node) => node.textContent || "").join("");
+    const index = findBestTextIndex(fullText, annotation);
+    if (index < 0) return;
+    const range = createRangeFromTextOffsets(textNodes, index, index + selectedText.length);
+    if (!range) return;
+    const rect = range.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) return;
+
+    const anchor = document.createElement("button");
+    anchor.type = "button";
+    anchor.className = "paper-reader-md-note-anchor";
+    anchor.title = "Open note";
+    anchor.dataset.annotationId = String(annotation.id);
+    anchor.innerHTML = '<span class="codicon codicon-notebook" aria-hidden="true"></span>';
+    anchor.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      handler.emit("openMarkdownAnnotationNote", annotation.id);
+    });
+    anchor.style.left = `${Math.min(window.innerWidth - 24, rect.right + 4)}px`;
+    anchor.style.top = `${Math.max(4, rect.top + (rect.height - 18) / 2)}px`;
+    layer.appendChild(anchor);
+  });
+};
+
+const scheduleMarkdownAnnotationRender = () => {
+  window.clearTimeout(annotationRenderTimer);
+  annotationRenderTimer = window.setTimeout(() => {
+    renderMarkdownAnnotations(currentMarkdownAnnotations);
+  }, 80);
+};
+
 handler.on("open", async (md) => {
   const { content, rootPath, documentCacheId, pendingFragment, config } = md;
   const {
@@ -180,6 +311,10 @@ handler.on("open", async (md) => {
         }
         editor.setValue(content);
         editor.markSaved();
+        handler.emit("loadMarkdownAnnotations");
+      })
+      handler.on("markdownAnnotations", (annotations) => {
+        requestAnimationFrame(() => renderMarkdownAnnotations(annotations || []));
       })
       handler.on("gotoBlock", (fragment) => {
         if (fragment) {
@@ -201,6 +336,9 @@ handler.on("open", async (md) => {
         editor.scrollToBlock(pendingFragment);
       }
       enableMathEditorLineWrap();
+      window.addEventListener("scroll", scheduleMarkdownAnnotationRender, true);
+      window.addEventListener("resize", scheduleMarkdownAnnotationRender);
+      handler.emit("loadMarkdownAnnotations");
     }
   })
   bindShortcut(handler, editor);

@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { createHash } from 'crypto';
+import * as path from 'path';
 import {
   sendEditorSelectionToCodex,
   sendPdfSelectionToCodex,
@@ -19,6 +21,47 @@ import {
   MarkdownWysiwygProvider,
   openMarkdownWysiwyg,
 } from './markdownWysiwygProvider';
+
+function getStableDocumentHash(document: vscode.TextDocument): string {
+  const hash = createHash('sha256');
+  hash.update(document.uri.toString());
+  return hash.digest('hex');
+}
+
+function getSelectionContext(
+  document: vscode.TextDocument,
+  selectedText: string
+): { prefixText: string; suffixText: string } {
+  const text = document.getText();
+  const index = text.indexOf(selectedText);
+  const contextSize = 80;
+  if (index < 0) {
+    return { prefixText: '', suffixText: '' };
+  }
+  return {
+    prefixText: text.slice(Math.max(0, index - contextSize), index),
+    suffixText: text.slice(
+      index + selectedText.length,
+      index + selectedText.length + contextSize
+    ),
+  };
+}
+
+async function openAnnotationMarkdown(
+  exportedPath: string | undefined
+): Promise<void> {
+  if (!exportedPath) {
+    throw new Error('Markdown note file was not created.');
+  }
+  const document = await vscode.workspace.openTextDocument(
+    vscode.Uri.file(exportedPath)
+  );
+  await vscode.window.showTextDocument(document, {
+    preview: false,
+    preserveFocus: false,
+    viewColumn: vscode.ViewColumn.Beside,
+  });
+}
 
 export function activate(
   context: vscode.ExtensionContext
@@ -178,9 +221,13 @@ export function activate(
       async () => {
         try {
           const editor = vscode.window.activeTextEditor;
-          if (!editor || editor.selection.isEmpty) {
+          if (
+            !editor ||
+            editor.selection.isEmpty ||
+            editor.document.languageId !== 'markdown'
+          ) {
             vscode.window.showErrorMessage(
-              'Please select Markdown text to add to Paper Reader notes.'
+              'Please select Markdown text to create a Paper Reader note.'
             );
             return;
           }
@@ -188,32 +235,29 @@ export function activate(
           const selectedText = editor.document.getText(editor.selection).trim();
           if (!selectedText) {
             vscode.window.showErrorMessage(
-              'Please select Markdown text to add to Paper Reader notes.'
+              'Please select Markdown text to create a Paper Reader note.'
             );
             return;
           }
 
-          const source = vscode.workspace.asRelativePath(
-            editor.document.uri,
-            false
-          );
-          const note = await getNoteStore();
-          note.appendToDefaultNote(
-            [
-              `## From ${source}`,
-              '',
-              selectedText
-                .split(/\r?\n/)
-                .map((line) => `> ${line}`)
-                .join('\n'),
-            ].join('\n')
-          );
-          vscode.window.showInformationMessage(
-            'Selection added to Paper Reader notes.'
-          );
+          const context = getSelectionContext(editor.document, selectedText);
+          const store = await getNoteStore();
+          const annotation = store.saveMarkdownAnnotation({
+            documentUri: editor.document.uri.toString(),
+            documentHash: getStableDocumentHash(editor.document),
+            documentTitle: path.basename(
+              editor.document.uri.fsPath || editor.document.uri.path
+            ),
+            selectedText,
+            prefixText: context.prefixText,
+            suffixText: context.suffixText,
+            content: '## Note\n\n',
+          });
+          await openAnnotationMarkdown(annotation.exportedPath);
+          vscode.window.showInformationMessage('Markdown note created.');
         } catch (error) {
           vscode.window.showErrorMessage(
-            `Unable to add selection to Paper Reader notes: ${
+            `Unable to create Paper Reader Markdown note: ${
               error instanceof Error ? error.message : String(error)
             }`
           );

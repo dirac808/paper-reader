@@ -244,6 +244,39 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     text-decoration: underline;
 }
 
+.paper-reader-md-note-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    pointer-events: none;
+}
+
+.paper-reader-md-note-anchor {
+    position: fixed;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-left: 4px;
+    border: 1px solid color-mix(in srgb, var(--ctx-icon-notes, #cca700) 55%, transparent);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--ctx-icon-notes, #cca700) 18%, var(--vscode-editor-background, transparent));
+    color: var(--ctx-icon-notes, #cca700);
+    cursor: pointer;
+    pointer-events: auto;
+    vertical-align: text-bottom;
+}
+
+.paper-reader-md-note-anchor:hover {
+    background: color-mix(in srgb, var(--ctx-icon-notes, #cca700) 28%, var(--vscode-editor-background, transparent));
+}
+
+.paper-reader-md-note-anchor .codicon {
+    font-size: 13px;
+    line-height: 1;
+}
+
 .vditor-code-block--cm .cm-scroller,
 .vditor-code-block--cm .cm-content,
 .vditor-code-block--cm .cm-line,

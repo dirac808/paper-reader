@@ -136,6 +136,22 @@ const getSelectedMarkdown = (editor) => {
     return ''
 }
 
+const getSelectionAnchor = () => {
+    const selection = document.getSelection()
+    const text = getSelectedPlainText()
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed || !text) return null
+    const editorRoot = document.getElementById('vditor')
+    if (!editorRoot?.contains(selection.anchorNode) || !editorRoot.contains(selection.focusNode)) return null
+    const documentText = htmlToPlainText(editorRoot.innerHTML)
+    const start = documentText.indexOf(text)
+    const contextSize = 80
+    return {
+        selectedText: text,
+        prefixText: start >= 0 ? documentText.slice(Math.max(0, start - contextSize), start) : '',
+        suffixText: start >= 0 ? documentText.slice(start + text.length, start + text.length + contextSize) : '',
+    }
+}
+
 const copyHtml = async (html) => {
     if (!html) return
     if (navigator.clipboard?.write && window.ClipboardItem) {
@@ -201,7 +217,7 @@ export const createContextMenu = (editor) => {
                 handler.emit('sendSelectionToCodex', getSelectedMarkdown(editor))
                 break
             case 'addSelectionToNotes':
-                handler.emit('addSelectionToNotes', getSelectedMarkdown(editor))
+                handler.emit('addSelectionToNotes', getSelectionAnchor())
                 break
             case 'copy':
                 handler.emit('telemetry', { event: 'markdown.copy' })
