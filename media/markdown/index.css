@@ -246,12 +246,38 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 
 .vditor-code-block--cm .cm-scroller,
 .vditor-code-block--cm .cm-content,
-.vditor-code-block--cm .cm-line {
+.vditor-code-block--cm .cm-line,
+.vditor-math-cm-host .cm-scroller,
+.vditor-math-cm-host .cm-content,
+.vditor-math-cm-host .cm-line,
+[data-type="math-block"] .vditor-cm-host .cm-scroller,
+[data-type="math-block"] .vditor-cm-host .cm-content,
+[data-type="math-block"] .vditor-cm-host .cm-line {
     white-space: pre-wrap !important;
-    overflow-wrap: anywhere;
-    word-break: break-word;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
 }
 
-.vditor-code-block--cm .cm-scroller {
+.vditor-code-block--cm .cm-scroller,
+.vditor-math-cm-host .cm-scroller,
+[data-type="math-block"] .vditor-cm-host .cm-scroller {
     overflow-x: hidden !important;
+}
+
+.vditor-math-cm-host,
+[data-type="math-block"] .vditor-cm-host {
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+}
+
+.vditor-math-cm-host .cm-editor,
+[data-type="math-block"] .vditor-cm-host .cm-editor {
+    max-width: 100% !important;
+}
+
+.vditor-math-cm-host .cm-content,
+[data-type="math-block"] .vditor-cm-host .cm-content {
+    flex-shrink: 1 !important;
+    min-width: 0 !important;
+    width: 100% !important;
 }

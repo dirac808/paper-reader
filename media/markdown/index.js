@@ -1,6 +1,39 @@
 import { getToolbar, bindShortcut, createContextMenu, setAIAvailable } from "./util.js";
 import { mapVscodeLanguageToVditorLang } from "./lang.js";
 
+const enableMathEditorLineWrap = () => {
+  const apply = () => {
+    document
+      .querySelectorAll(".vditor-math-cm-host, [data-type='math-block'] .vditor-cm-host")
+      .forEach((host) => {
+        host.style.maxWidth = "100%";
+        host.style.overflowX = "hidden";
+
+        host.querySelectorAll(".cm-editor, .cm-content").forEach((node) => {
+          node.classList.add("cm-lineWrapping");
+          node.style.maxWidth = "100%";
+          node.style.minWidth = "0";
+        });
+
+        host.querySelectorAll(".cm-scroller").forEach((node) => {
+          node.style.overflowX = "hidden";
+        });
+
+        host.querySelectorAll(".cm-content, .cm-line").forEach((node) => {
+          node.style.whiteSpace = "pre-wrap";
+          node.style.overflowWrap = "anywhere";
+          node.style.wordBreak = "break-word";
+        });
+      });
+  };
+  apply();
+  const observer = new MutationObserver(apply);
+  observer.observe(document.getElementById("vditor") || document.body, {
+    childList: true,
+    subtree: true,
+  });
+};
+
 handler.on("open", async (md) => {
   const { content, rootPath, documentCacheId, pendingFragment, config } = md;
   const {
@@ -167,6 +200,7 @@ handler.on("open", async (md) => {
       if (pendingFragment) {
         editor.scrollToBlock(pendingFragment);
       }
+      enableMathEditorLineWrap();
     }
   })
   bindShortcut(handler, editor);

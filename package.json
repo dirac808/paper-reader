@@ -119,7 +119,7 @@
       },
       {
         "command": "dipe-paper-reader.addSelectionToNotes",
-        "title": "Paper Reader: Add Selection to Notes"
+        "title": "Paper Reader: Add Note"
       },
       {
         "command": "dipe-paper-reader.openKnowledgeGraph",
