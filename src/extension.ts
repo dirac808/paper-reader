@@ -64,7 +64,7 @@ export function activate(
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(
       MarkdownWysiwygProvider.viewType,
-      new MarkdownWysiwygProvider(context),
+      new MarkdownWysiwygProvider(context, getNoteStore),
       {
         webviewOptions: {
           retainContextWhenHidden: true,

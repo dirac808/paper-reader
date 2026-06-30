@@ -130,6 +130,12 @@ const getSelectedPlainText = () => {
     return htmlToPlainText(container.innerHTML) || normalizePlainText(selection.toString())
 }
 
+const getSelectedMarkdown = (editor) => {
+    const text = getSelectedPlainText()
+    if (text) return text
+    return ''
+}
+
 const copyHtml = async (html) => {
     if (!html) return
     if (navigator.clipboard?.write && window.ClipboardItem) {
@@ -191,6 +197,12 @@ export const createContextMenu = (editor) => {
         closeMenu()
         const action = item.dataset.action
         switch (action) {
+            case 'sendSelectionToCodex':
+                handler.emit('sendSelectionToCodex', getSelectedMarkdown(editor))
+                break
+            case 'addSelectionToNotes':
+                handler.emit('addSelectionToNotes', getSelectedMarkdown(editor))
+                break
             case 'copy':
                 handler.emit('telemetry', { event: 'markdown.copy' })
                 document.execCommand('copy')

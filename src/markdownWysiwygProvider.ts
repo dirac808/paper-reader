@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { sendMarkdownTextToCodex } from './codexBridge';
+import { NoteStore } from './noteStore';
 
 type WebviewMessage = {
   type: string;
@@ -158,7 +160,10 @@ export class MarkdownWysiwygProvider
   implements vscode.CustomTextEditorProvider {
   public static readonly viewType = MARKDOWN_VIEW_TYPE;
 
-  public constructor(private readonly context: vscode.ExtensionContext) {}
+  public constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly getNoteStore: () => Promise<NoteStore>
+  ) {}
 
   public resolveCustomTextEditor(
     document: vscode.TextDocument,
@@ -264,6 +269,40 @@ export class MarkdownWysiwygProvider
             break;
           case 'img':
             await writeDroppedImage(document, message.content);
+            break;
+          case 'sendSelectionToCodex':
+            await sendMarkdownTextToCodex(
+              message.content,
+              vscode.workspace.asRelativePath(document.uri, false)
+            );
+            break;
+          case 'addSelectionToNotes':
+            if (
+              typeof message.content !== 'string' ||
+              !message.content.trim()
+            ) {
+              vscode.window.showErrorMessage(
+                'Please select Markdown text to add to Paper Reader notes.'
+              );
+              break;
+            }
+            (await this.getNoteStore()).appendToDefaultNote(
+              [
+                `## From ${vscode.workspace.asRelativePath(
+                  document.uri,
+                  false
+                )}`,
+                '',
+                message.content
+                  .trim()
+                  .split(/\r?\n/)
+                  .map((line) => `> ${line}`)
+                  .join('\n'),
+              ].join('\n')
+            );
+            vscode.window.showInformationMessage(
+              'Selection added to Paper Reader notes.'
+            );
             break;
           case 'insertImage':
             vscode.window.showInformationMessage(

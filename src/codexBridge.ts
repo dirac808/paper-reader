@@ -136,3 +136,34 @@ export async function sendEditorSelectionToCodex(
   );
   await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
 }
+
+export async function sendMarkdownTextToCodex(
+  text: unknown,
+  source: string
+): Promise<void> {
+  if (typeof text !== 'string') {
+    return;
+  }
+
+  const selectedText = text.trim();
+  if (!selectedText) {
+    vscode.window.showErrorMessage('Please select text to send to Codex.');
+    return;
+  }
+
+  const codexReady = await activateCodexExtension();
+  if (!codexReady) {
+    return;
+  }
+
+  const resource = await createEditorSelectionResource(
+    selectedText,
+    source,
+    'markdown'
+  );
+  await vscode.commands.executeCommand(
+    CODEX_ADD_FILE_TO_THREAD_COMMAND,
+    resource
+  );
+  await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+}

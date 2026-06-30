@@ -42,6 +42,8 @@ html {
     --ctx-icon-docx: var(--vscode-charts-blue, #3794ff);
     --ctx-icon-html: var(--vscode-symbolIcon-stringForeground, #ce9178);
     --ctx-icon-folder: var(--vscode-symbolIcon-folderForeground, #dcb67a);
+    --ctx-icon-codex: var(--vscode-textLink-foreground, #3794ff);
+    --ctx-icon-notes: var(--vscode-charts-yellow, #cca700);
 }
 
 .vditor-context-menu[hidden] {
@@ -160,6 +162,14 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     color: var(--vscode-textLink-foreground, #4a90d9);
 }
 
+.vditor-context-menu__item[data-action="sendSelectionToCodex"] .codicon {
+    color: var(--ctx-icon-codex);
+}
+
+.vditor-context-menu__item[data-action="addSelectionToNotes"] .codicon {
+    color: var(--ctx-icon-notes);
+}
+
 .vditor-context-menu__label {
     flex: 1;
     overflow: hidden;
@@ -232,4 +242,16 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 
 .vditor-help-sponsor-text a:hover {
     text-decoration: underline;
+}
+
+.vditor-code-block--cm .cm-scroller,
+.vditor-code-block--cm .cm-content,
+.vditor-code-block--cm .cm-line {
+    white-space: pre-wrap !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.vditor-code-block--cm .cm-scroller {
+    overflow-x: hidden !important;
 }
