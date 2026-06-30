@@ -1,56 +1,40 @@
 import { getToolbar, bindShortcut, createContextMenu, setAIAvailable } from "./util.js";
 import { mapVscodeLanguageToVditorLang } from "./lang.js";
 
-let mathLineWrapObserver = null;
-let mathLineWrapTimer = 0;
-
 const enableMathEditorLineWrap = () => {
-  const apply = () => {
-    mathLineWrapTimer = 0;
-    document
-      .querySelectorAll(".vditor-math-cm-host, [data-type='math-block'] .vditor-cm-host")
-      .forEach((host) => {
-        if (host.dataset.paperReaderWrapApplied === "true") return;
-        host.dataset.paperReaderWrapApplied = "true";
-        host.style.maxWidth = "100%";
-        host.style.overflowX = "hidden";
+  document
+    .querySelectorAll(".vditor-math-cm-host, [data-type='math-block'] .vditor-cm-host")
+    .forEach((host) => {
+      if (host.dataset.paperReaderWrapApplied === "true") return;
+      host.dataset.paperReaderWrapApplied = "true";
+      host.style.maxWidth = "100%";
+      host.style.overflowX = "hidden";
 
-        host.querySelectorAll(".cm-editor, .cm-content").forEach((node) => {
-          node.classList.add("cm-lineWrapping");
-          node.style.maxWidth = "100%";
-          node.style.minWidth = "0";
-        });
-
-        host.querySelectorAll(".cm-scroller").forEach((node) => {
-          node.style.overflowX = "hidden";
-        });
-
-        host.querySelectorAll(".cm-content, .cm-line").forEach((node) => {
-          node.style.whiteSpace = "pre-wrap";
-          node.style.overflowWrap = "anywhere";
-          node.style.wordBreak = "break-word";
-        });
+      host.querySelectorAll(".cm-editor, .cm-content").forEach((node) => {
+        node.classList.add("cm-lineWrapping");
+        node.style.maxWidth = "100%";
+        node.style.minWidth = "0";
       });
-  };
-  apply();
-  if (mathLineWrapObserver) return;
-  const observer = new MutationObserver(() => {
-    if (mathLineWrapTimer) return;
-    mathLineWrapTimer = window.setTimeout(apply, 350);
-  });
-  observer.observe(document.getElementById("vditor") || document.body, {
-    childList: true,
-    subtree: true,
-  });
-  mathLineWrapObserver = observer;
+
+      host.querySelectorAll(".cm-scroller").forEach((node) => {
+        node.style.overflowX = "hidden";
+      });
+
+      host.querySelectorAll(".cm-content, .cm-line").forEach((node) => {
+        node.style.whiteSpace = "pre-wrap";
+        node.style.overflowWrap = "anywhere";
+        node.style.wordBreak = "break-word";
+      });
+    });
 };
 
 const normalizeText = (text) => (text || "").replace(/\s+/g, " ").trim();
 let currentMarkdownAnnotations = [];
+let currentMarkdownAnnotationAnchors = [];
 let annotationRenderFrame = 0;
 let annotationRenderTimer = 0;
 let mathRefreshTimer = 0;
-let mathNormalizationTimer = 0;
+const markdownHighlightName = "paper-reader-markdown-annotations";
 
 const normalizeDisplayMathDelimiters = (markdown = "") => {
   return (markdown || "")
@@ -63,8 +47,6 @@ const normalizeDisplayMathDelimiters = (markdown = "") => {
       (_match, lineStart, indent, body, suffix) => `${lineStart}${indent}$$\n${body.trim()}\n${indent}$$${suffix}`,
     );
 };
-
-const hasDisplayMathAlias = (markdown = "") => /(^|\n)[ \t]*\\\[/.test(markdown || "");
 
 const getEditorRoot = () => document.querySelector("#vditor .vditor-wysiwyg, #vditor .vditor-ir, #vditor");
 
@@ -155,6 +137,10 @@ const createRangeFromTextOffsets = (textNodes, start, end) => {
 
 const clearMarkdownAnnotationMarks = () => {
   document.querySelectorAll(".paper-reader-md-note-layer").forEach((node) => node.remove());
+  if (window.CSS?.highlights?.delete) {
+    window.CSS.highlights.delete(markdownHighlightName);
+  }
+  currentMarkdownAnnotationAnchors = [];
 };
 
 const renderMarkdownAnnotations = (annotations = []) => {
@@ -168,11 +154,10 @@ const renderMarkdownAnnotations = (annotations = []) => {
   layer.style.width = `${Math.max(layerHost.scrollWidth, layerHost.clientWidth)}px`;
   layer.style.height = `${Math.max(layerHost.scrollHeight, layerHost.clientHeight)}px`;
   layerHost.appendChild(layer);
-  const hostRect = layerHost.getBoundingClientRect();
-  const hostScrollLeft = layerHost.scrollLeft || 0;
-  const hostScrollTop = layerHost.scrollTop || 0;
   const textNodes = collectTextNodes(root);
   const fullText = textNodes.map((node) => node.textContent || "").join("");
+  const highlightRanges = [];
+  const supportsCssHighlight = !!window.CSS?.highlights && typeof window.Highlight === "function";
 
   annotations.forEach((annotation) => {
     const selectedText = annotation?.selectedText || "";
@@ -183,16 +168,9 @@ const renderMarkdownAnnotations = (annotations = []) => {
     const rect = range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
 
-    Array.from(range.getClientRects()).forEach((itemRect) => {
-      if (itemRect.width === 0 || itemRect.height === 0) return;
-      const highlight = document.createElement("span");
-      highlight.className = "paper-reader-md-note-highlight";
-      highlight.style.left = `${itemRect.left - hostRect.left + hostScrollLeft}px`;
-      highlight.style.top = `${itemRect.top - hostRect.top + hostScrollTop}px`;
-      highlight.style.width = `${itemRect.width}px`;
-      highlight.style.height = `${itemRect.height}px`;
-      layer.appendChild(highlight);
-    });
+    if (supportsCssHighlight) {
+      highlightRanges.push(range);
+    }
 
     const anchor = document.createElement("button");
     anchor.type = "button";
@@ -205,9 +183,57 @@ const renderMarkdownAnnotations = (annotations = []) => {
       event.stopPropagation();
       handler.emit("openMarkdownAnnotationNote", annotation.id);
     });
+    layer.appendChild(anchor);
+    currentMarkdownAnnotationAnchors.push({ anchor, range, layerHost });
+  });
+
+  if (supportsCssHighlight && highlightRanges.length > 0) {
+    window.CSS.highlights.set(markdownHighlightName, new window.Highlight(...highlightRanges));
+  } else {
+    renderFallbackAnnotationHighlights(layer, layerHost, currentMarkdownAnnotationAnchors);
+  }
+  updateMarkdownAnnotationAnchorPositions();
+};
+
+const renderFallbackAnnotationHighlights = (layer, layerHost, anchors) => {
+  const hostRect = layerHost.getBoundingClientRect();
+  const hostScrollLeft = layerHost.scrollLeft || 0;
+  const hostScrollTop = layerHost.scrollTop || 0;
+  anchors.forEach(({ range }) => {
+    Array.from(range.getClientRects()).forEach((itemRect) => {
+      if (itemRect.width === 0 || itemRect.height === 0) return;
+      const highlight = document.createElement("span");
+      highlight.className = "paper-reader-md-note-highlight";
+      highlight.style.left = `${itemRect.left - hostRect.left + hostScrollLeft}px`;
+      highlight.style.top = `${itemRect.top - hostRect.top + hostScrollTop}px`;
+      highlight.style.width = `${itemRect.width}px`;
+      highlight.style.height = `${itemRect.height}px`;
+      layer.appendChild(highlight);
+    });
+  });
+};
+
+const updateMarkdownAnnotationAnchorPositions = () => {
+  currentMarkdownAnnotationAnchors.forEach(({ anchor, range, layerHost }) => {
+    const rect = range.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      anchor.hidden = true;
+      return;
+    }
+    const hostRect = layerHost.getBoundingClientRect();
+    const hostScrollLeft = layerHost.scrollLeft || 0;
+    const hostScrollTop = layerHost.scrollTop || 0;
+    anchor.hidden = false;
     anchor.style.left = `${rect.right - hostRect.left + hostScrollLeft + 4}px`;
     anchor.style.top = `${rect.top - hostRect.top + hostScrollTop + (rect.height - 18) / 2}px`;
-    layer.appendChild(anchor);
+  });
+};
+
+const scheduleMarkdownAnnotationAnchorUpdate = () => {
+  if (annotationRenderFrame) return;
+  annotationRenderFrame = window.requestAnimationFrame(() => {
+    annotationRenderFrame = 0;
+    updateMarkdownAnnotationAnchorPositions();
   });
 };
 
@@ -234,7 +260,7 @@ const refreshRenderedMath = (editor, markdownConfig, rootPath) => {
     },
   });
   enableMathEditorLineWrap();
-  scheduleMarkdownAnnotationRender();
+  scheduleMarkdownAnnotationAnchorUpdate();
 };
 
 const scheduleMathRefresh = (editor, markdownConfig, rootPath) => {
@@ -243,31 +269,6 @@ const scheduleMathRefresh = (editor, markdownConfig, rootPath) => {
 };
 
 const getNormalizedEditorValue = (editor) => normalizeDisplayMathDelimiters(editor?.getValue?.() || "");
-
-const scheduleDisplayMathNormalization = (editor) => {
-  window.clearTimeout(mathNormalizationTimer);
-  mathNormalizationTimer = window.setTimeout(() => {
-    const content = editor?.getValue?.() || "";
-    if (!hasDisplayMathAlias(content) || document.querySelector(".cm-editor.cm-focused")) {
-      return;
-    }
-    const normalizedContent = normalizeDisplayMathDelimiters(content);
-    if (normalizedContent === content) {
-      return;
-    }
-    const scrollHost = getAnnotationLayerHost();
-    const scrollTop = scrollHost?.scrollTop || 0;
-    const scrollLeft = scrollHost?.scrollLeft || 0;
-    editor.setValue(normalizedContent);
-    editor.markSaved(normalizedContent);
-    handler.emit("save", normalizedContent);
-    if (scrollHost) {
-      scrollHost.scrollTop = scrollTop;
-      scrollHost.scrollLeft = scrollLeft;
-    }
-    scheduleMarkdownAnnotationRender(500);
-  }, 1800);
-};
 
 handler.on("open", async (md) => {
   const { content, rootPath, documentCacheId, pendingFragment, config } = md;
@@ -343,11 +344,8 @@ handler.on("open", async (md) => {
     },
     input(content) {
       handler.emit("save", content)
-      if (hasDisplayMathAlias(content)) {
-        scheduleDisplayMathNormalization(editor);
-      }
       if (currentMarkdownAnnotations.length > 0) {
-        scheduleMarkdownAnnotationRender(1200);
+        scheduleMarkdownAnnotationRender(3500);
       }
     },
     upload: {
@@ -451,6 +449,9 @@ handler.on("open", async (md) => {
         editor.scrollToBlock(pendingFragment);
       }
       enableMathEditorLineWrap();
+      const annotationLayerHost = getAnnotationLayerHost();
+      annotationLayerHost?.addEventListener("scroll", scheduleMarkdownAnnotationAnchorUpdate, { passive: true });
+      window.addEventListener("scroll", scheduleMarkdownAnnotationAnchorUpdate, true);
       window.addEventListener("resize", () => scheduleMarkdownAnnotationRender(120));
       scheduleMathRefresh(editor, markdown, rootPath);
       handler.emit("loadMarkdownAnnotations");

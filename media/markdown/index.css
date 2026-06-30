@@ -251,6 +251,11 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     pointer-events: none;
 }
 
+::highlight(paper-reader-markdown-annotations) {
+    background: rgba(245, 215, 110, 0.26);
+    color: inherit;
+}
+
 .paper-reader-md-note-anchor {
     position: absolute;
     display: inline-flex;
