@@ -8,7 +8,6 @@ import {
   translateAcademicMarkdown,
 } from './deepSeekClient';
 import { getConfiguredOutputRoot, getStoredSettingValue } from './config';
-import { openMarkdownWithPreview } from './markdownPreview';
 
 type ExtractResult = {
   ok: boolean;
@@ -511,7 +510,12 @@ async function showMarkdownInNewWindow(
   title: string
 ): Promise<void> {
   const uri = vscode.Uri.file(markdownPath);
-  await openMarkdownWithPreview(uri);
+  const document = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(document, {
+    preserveFocus: false,
+    preview: false,
+    viewColumn: vscode.ViewColumn.Beside,
+  });
 
   try {
     await vscode.commands.executeCommand(
