@@ -6,6 +6,8 @@ const enableMathEditorLineWrap = () => {
     document
       .querySelectorAll(".vditor-math-cm-host, [data-type='math-block'] .vditor-cm-host")
       .forEach((host) => {
+        if (host.dataset.paperReaderWrapApplied === "true") return;
+        host.dataset.paperReaderWrapApplied = "true";
         host.style.maxWidth = "100%";
         host.style.overflowX = "hidden";
 
@@ -27,7 +29,9 @@ const enableMathEditorLineWrap = () => {
       });
   };
   apply();
-  const observer = new MutationObserver(apply);
+  const observer = new MutationObserver(() => {
+    window.requestAnimationFrame(apply);
+  });
   observer.observe(document.getElementById("vditor") || document.body, {
     childList: true,
     subtree: true,
@@ -129,17 +133,28 @@ const renderMarkdownAnnotations = (annotations = []) => {
   const layer = document.createElement("div");
   layer.className = "paper-reader-md-note-layer";
   document.body.appendChild(layer);
+  const textNodes = collectTextNodes(root);
+  const fullText = textNodes.map((node) => node.textContent || "").join("");
 
   annotations.forEach((annotation) => {
     const selectedText = annotation?.selectedText || "";
-    const textNodes = collectTextNodes(root);
-    const fullText = textNodes.map((node) => node.textContent || "").join("");
     const index = findBestTextIndex(fullText, annotation);
     if (index < 0) return;
     const range = createRangeFromTextOffsets(textNodes, index, index + selectedText.length);
     if (!range) return;
     const rect = range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
+
+    Array.from(range.getClientRects()).forEach((itemRect) => {
+      if (itemRect.width === 0 || itemRect.height === 0) return;
+      const highlight = document.createElement("span");
+      highlight.className = "paper-reader-md-note-highlight";
+      highlight.style.left = `${itemRect.left}px`;
+      highlight.style.top = `${itemRect.top}px`;
+      highlight.style.width = `${itemRect.width}px`;
+      highlight.style.height = `${itemRect.height}px`;
+      layer.appendChild(highlight);
+    });
 
     const anchor = document.createElement("button");
     anchor.type = "button";

@@ -77,7 +77,7 @@
       {
         "viewType": "paper-reader.markdownEditor",
         "displayName": "Paper Reader Markdown",
-        "priority": "option",
+        "priority": "default",
         "selector": [
           {
             "filenamePattern": "*.md"
@@ -103,7 +103,7 @@
       },
       {
         "command": "dipe-paper-reader.openMarkdownWysiwyg",
-        "title": "Paper Reader: Open Markdown WYSIWYG"
+        "title": "Paper Reader: Open Markdown"
       },
       {
         "command": "dipe-paper-reader.selfCheck",

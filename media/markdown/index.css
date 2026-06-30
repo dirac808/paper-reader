@@ -277,6 +277,15 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     line-height: 1;
 }
 
+.paper-reader-md-note-highlight {
+    position: fixed;
+    min-height: 1.2em;
+    border-radius: 3px;
+    background: rgba(245, 215, 110, 0.26);
+    border-bottom: 1px solid rgba(245, 215, 110, 0.58);
+    pointer-events: none;
+}
+
 .vditor-code-block--cm .cm-scroller,
 .vditor-code-block--cm .cm-content,
 .vditor-code-block--cm .cm-line,

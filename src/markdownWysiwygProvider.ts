@@ -253,7 +253,7 @@ export class MarkdownWysiwygProvider
       }
       syncTimer = setTimeout(() => {
         void flush();
-      }, 400);
+      }, 1200);
     };
 
     const emit = (type: string, messageContent?: unknown): void => {
