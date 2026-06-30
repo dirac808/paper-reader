@@ -131,15 +131,27 @@ async function openMarkdownTextPreview(resource?: vscode.Uri): Promise<void> {
   let openedFloatingWindow = false;
   try {
     await vscode.commands.executeCommand(
-      'workbench.action.moveEditorToNewWindow'
+      'workbench.action.copyEditorGroupToNewWindow'
     );
     openedFloatingWindow = true;
-    await delay(250);
+    await delay(500);
   } catch {
     // Older VS Code builds may not expose floating editor commands.
   }
 
-  await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
+  if (
+    vscode.window.activeTextEditor?.document.uri.toString() !== uri.toString()
+  ) {
+    await vscode.window.showTextDocument(document, {
+      preview: false,
+      preserveFocus: false,
+      viewColumn: vscode.ViewColumn.Active,
+    });
+  }
+
+  await vscode.commands.executeCommand('markdown.showPreviewToSide');
+  await delay(100);
+  await vscode.commands.executeCommand('workbench.action.focusLeftGroup');
 
   const previewConfig = vscode.workspace.getConfiguration('markdown.preview');
   const scrollPreviewWithEditor = previewConfig.get<boolean>(
@@ -156,7 +168,7 @@ async function openMarkdownTextPreview(resource?: vscode.Uri): Promise<void> {
     );
   } else if (!openedFloatingWindow) {
     vscode.window.showInformationMessage(
-      'Paper Reader opened Markdown text preview. Your VS Code version did not move it into a floating window automatically.'
+      'Paper Reader opened Markdown text preview in the current window. Your VS Code version did not move the editor group into a floating window automatically.'
     );
   }
 }
