@@ -2,9 +2,11 @@ import { getToolbar, bindShortcut, createContextMenu, setAIAvailable } from "./u
 import { mapVscodeLanguageToVditorLang } from "./lang.js";
 
 let mathLineWrapObserver = null;
+let mathLineWrapTimer = 0;
 
 const enableMathEditorLineWrap = () => {
   const apply = () => {
+    mathLineWrapTimer = 0;
     document
       .querySelectorAll(".vditor-math-cm-host, [data-type='math-block'] .vditor-cm-host")
       .forEach((host) => {
@@ -33,7 +35,8 @@ const enableMathEditorLineWrap = () => {
   apply();
   if (mathLineWrapObserver) return;
   const observer = new MutationObserver(() => {
-    window.requestAnimationFrame(apply);
+    if (mathLineWrapTimer) return;
+    mathLineWrapTimer = window.setTimeout(apply, 350);
   });
   observer.observe(document.getElementById("vditor") || document.body, {
     childList: true,
@@ -45,7 +48,9 @@ const enableMathEditorLineWrap = () => {
 const normalizeText = (text) => (text || "").replace(/\s+/g, " ").trim();
 let currentMarkdownAnnotations = [];
 let annotationRenderFrame = 0;
+let annotationRenderTimer = 0;
 let mathRefreshTimer = 0;
+let mathNormalizationTimer = 0;
 
 const normalizeDisplayMathDelimiters = (markdown = "") => {
   return (markdown || "")
@@ -58,6 +63,8 @@ const normalizeDisplayMathDelimiters = (markdown = "") => {
       (_match, lineStart, indent, body, suffix) => `${lineStart}${indent}$$\n${body.trim()}\n${indent}$$${suffix}`,
     );
 };
+
+const hasDisplayMathAlias = (markdown = "") => /(^|\n)[ \t]*\\\[/.test(markdown || "");
 
 const getEditorRoot = () => document.querySelector("#vditor .vditor-wysiwyg, #vditor .vditor-ir, #vditor");
 
@@ -204,7 +211,12 @@ const renderMarkdownAnnotations = (annotations = []) => {
   });
 };
 
-const scheduleMarkdownAnnotationRender = () => {
+const scheduleMarkdownAnnotationRender = (delay = 0) => {
+  window.clearTimeout(annotationRenderTimer);
+  if (delay > 0) {
+    annotationRenderTimer = window.setTimeout(() => scheduleMarkdownAnnotationRender(), delay);
+    return;
+  }
   if (annotationRenderFrame) return;
   annotationRenderFrame = window.requestAnimationFrame(() => {
     annotationRenderFrame = 0;
@@ -215,12 +227,6 @@ const scheduleMarkdownAnnotationRender = () => {
 const refreshRenderedMath = (editor, markdownConfig, rootPath) => {
   const root = document.getElementById("vditor");
   if (!root) return;
-  root
-    .querySelectorAll(".language-math[data-math], .language-math.vditor-reset--error[data-math]")
-    .forEach((node) => {
-      node.removeAttribute("data-math");
-      node.classList.remove("vditor-reset--error");
-    });
   window.Vditor?.mathRender?.(root, {
     cdn: rootPath,
     math: {
@@ -233,10 +239,35 @@ const refreshRenderedMath = (editor, markdownConfig, rootPath) => {
 
 const scheduleMathRefresh = (editor, markdownConfig, rootPath) => {
   window.clearTimeout(mathRefreshTimer);
-  mathRefreshTimer = window.setTimeout(() => refreshRenderedMath(editor, markdownConfig, rootPath), 180);
+  mathRefreshTimer = window.setTimeout(() => refreshRenderedMath(editor, markdownConfig, rootPath), 700);
 };
 
 const getNormalizedEditorValue = (editor) => normalizeDisplayMathDelimiters(editor?.getValue?.() || "");
+
+const scheduleDisplayMathNormalization = (editor) => {
+  window.clearTimeout(mathNormalizationTimer);
+  mathNormalizationTimer = window.setTimeout(() => {
+    const content = editor?.getValue?.() || "";
+    if (!hasDisplayMathAlias(content) || document.querySelector(".cm-editor.cm-focused")) {
+      return;
+    }
+    const normalizedContent = normalizeDisplayMathDelimiters(content);
+    if (normalizedContent === content) {
+      return;
+    }
+    const scrollHost = getAnnotationLayerHost();
+    const scrollTop = scrollHost?.scrollTop || 0;
+    const scrollLeft = scrollHost?.scrollLeft || 0;
+    editor.setValue(normalizedContent);
+    editor.markSaved(normalizedContent);
+    handler.emit("save", normalizedContent);
+    if (scrollHost) {
+      scrollHost.scrollTop = scrollTop;
+      scrollHost.scrollLeft = scrollLeft;
+    }
+    scheduleMarkdownAnnotationRender(500);
+  }, 1800);
+};
 
 handler.on("open", async (md) => {
   const { content, rootPath, documentCacheId, pendingFragment, config } = md;
@@ -311,24 +342,13 @@ handler.on("open", async (md) => {
       handler.emit('editViewerSettings', editor.exportViewerSettings())
     },
     input(content) {
-      const normalizedContent = normalizeDisplayMathDelimiters(content);
-      handler.emit("save", normalizedContent)
-      if (normalizedContent !== content && !document.querySelector(".cm-editor.cm-focused")) {
-        const scrollHost = getAnnotationLayerHost();
-        const scrollTop = scrollHost?.scrollTop || 0;
-        const scrollLeft = scrollHost?.scrollLeft || 0;
-        window.setTimeout(() => {
-          if (normalizeDisplayMathDelimiters(editor.getValue()) === normalizedContent) {
-            editor.setValue(normalizedContent);
-            editor.markSaved(normalizedContent);
-            if (scrollHost) {
-              scrollHost.scrollTop = scrollTop;
-              scrollHost.scrollLeft = scrollLeft;
-            }
-          }
-        }, 240);
+      handler.emit("save", content)
+      if (hasDisplayMathAlias(content)) {
+        scheduleDisplayMathNormalization(editor);
       }
-      scheduleMathRefresh(editor, markdown, rootPath);
+      if (currentMarkdownAnnotations.length > 0) {
+        scheduleMarkdownAnnotationRender(1200);
+      }
     },
     upload: {
       url: '/image',
@@ -431,10 +451,7 @@ handler.on("open", async (md) => {
         editor.scrollToBlock(pendingFragment);
       }
       enableMathEditorLineWrap();
-      const annotationLayerHost = getAnnotationLayerHost();
-      annotationLayerHost?.addEventListener("scroll", scheduleMarkdownAnnotationRender, { passive: true });
-      window.addEventListener("scroll", scheduleMarkdownAnnotationRender, true);
-      window.addEventListener("resize", scheduleMarkdownAnnotationRender);
+      window.addEventListener("resize", () => scheduleMarkdownAnnotationRender(120));
       scheduleMathRefresh(editor, markdown, rootPath);
       handler.emit("loadMarkdownAnnotations");
     }
