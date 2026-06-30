@@ -48,6 +48,14 @@ function getSelectionContext(
   };
 }
 
+function isMarkdownUri(uri: vscode.Uri | undefined): uri is vscode.Uri {
+  return !!uri && /\.(md|markdown)$/i.test(uri.fsPath || uri.path);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function openAnnotationMarkdown(
   exportedPath: string | undefined
 ): Promise<void> {
@@ -66,7 +74,7 @@ async function openAnnotationMarkdown(
 
 async function normalizeMarkdownMathFile(resource?: vscode.Uri): Promise<void> {
   const uri = resource || vscode.window.activeTextEditor?.document.uri;
-  if (!uri || !/\.(md|markdown)$/i.test(uri.fsPath || uri.path)) {
+  if (!isMarkdownUri(uri)) {
     vscode.window.showErrorMessage(
       'Please select a Markdown file to normalize math delimiters.'
     );
@@ -102,6 +110,55 @@ async function normalizeMarkdownMathFile(resource?: vscode.Uri): Promise<void> {
       result.changedBlocks === 1 ? '' : 's'
     } to $$.`
   );
+}
+
+async function openMarkdownTextPreview(resource?: vscode.Uri): Promise<void> {
+  const uri = resource || vscode.window.activeTextEditor?.document.uri;
+  if (!isMarkdownUri(uri)) {
+    vscode.window.showErrorMessage(
+      'Please select a Markdown file to open with text preview.'
+    );
+    return;
+  }
+
+  const document = await vscode.workspace.openTextDocument(uri);
+  await vscode.window.showTextDocument(document, {
+    preview: false,
+    preserveFocus: false,
+    viewColumn: vscode.ViewColumn.Active,
+  });
+
+  let openedFloatingWindow = false;
+  try {
+    await vscode.commands.executeCommand(
+      'workbench.action.moveEditorToNewWindow'
+    );
+    openedFloatingWindow = true;
+    await delay(250);
+  } catch {
+    // Older VS Code builds may not expose floating editor commands.
+  }
+
+  await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
+
+  const previewConfig = vscode.workspace.getConfiguration('markdown.preview');
+  const scrollPreviewWithEditor = previewConfig.get<boolean>(
+    'scrollPreviewWithEditor',
+    true
+  );
+  const scrollEditorWithPreview = previewConfig.get<boolean>(
+    'scrollEditorWithPreview',
+    true
+  );
+  if (!scrollPreviewWithEditor || !scrollEditorWithPreview) {
+    vscode.window.showWarningMessage(
+      'Paper Reader opened native Markdown text preview, but VS Code Markdown preview scroll sync is disabled in settings.'
+    );
+  } else if (!openedFloatingWindow) {
+    vscode.window.showInformationMessage(
+      'Paper Reader opened Markdown text preview. Your VS Code version did not move it into a floating window automatically.'
+    );
+  }
 }
 
 export function activate(
@@ -215,6 +272,22 @@ export function activate(
         } catch (error) {
           vscode.window.showErrorMessage(
             `Unable to open Paper Reader Markdown editor: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      }
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'dipe-paper-reader.openMarkdownTextPreview',
+      async (resource?: vscode.Uri) => {
+        try {
+          await openMarkdownTextPreview(resource);
+        } catch (error) {
+          vscode.window.showErrorMessage(
+            `Unable to open Paper Reader Markdown text preview: ${
               error instanceof Error ? error.message : String(error)
             }`
           );

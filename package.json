@@ -26,6 +26,7 @@
     "onCommand:dipe-paper-reader.testSendToCodex",
     "onCommand:dipe-paper-reader.sendSelectionToCodex",
     "onCommand:dipe-paper-reader.openMarkdownWysiwyg",
+    "onCommand:dipe-paper-reader.openMarkdownTextPreview",
     "onCommand:dipe-paper-reader.normalizeMarkdownMath",
     "onCommand:dipe-paper-reader.selfCheck",
     "onCommand:dipe-paper-reader.openConfiguration",
@@ -107,6 +108,10 @@
         "title": "Paper Reader: Open Markdown"
       },
       {
+        "command": "dipe-paper-reader.openMarkdownTextPreview",
+        "title": "Paper Reader: Open Markdown Text Preview"
+      },
+      {
         "command": "dipe-paper-reader.normalizeMarkdownMath",
         "title": "Paper Reader: Normalize Markdown Math"
       },
@@ -153,9 +158,14 @@
           "group": "navigation@3"
         },
         {
-          "command": "dipe-paper-reader.normalizeMarkdownMath",
+          "command": "dipe-paper-reader.openMarkdownTextPreview",
           "when": "resourceFilename =~ /\\.(md|markdown)$/i",
           "group": "navigation@4"
+        },
+        {
+          "command": "dipe-paper-reader.normalizeMarkdownMath",
+          "when": "resourceFilename =~ /\\.(md|markdown)$/i",
+          "group": "navigation@5"
         }
       ],
       "editor/context": [
@@ -175,6 +185,11 @@
           "command": "dipe-paper-reader.openMarkdownWysiwyg",
           "when": "resourceExtname == '.md' || resourceExtname == '.markdown'",
           "group": "navigation@-2"
+        },
+        {
+          "command": "dipe-paper-reader.openMarkdownTextPreview",
+          "when": "resourceExtname == '.md' || resourceExtname == '.markdown'",
+          "group": "navigation@-1"
         }
       ]
     },
