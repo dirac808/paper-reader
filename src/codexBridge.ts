@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
 
@@ -11,6 +11,25 @@ const PDF_SELECTION_PROMPT_PREFIX =
   '\u003e [\u6765\u81ea\u6b63\u5728\u9605\u8bfb\u7684PDF\u6587\u732e]';
 const mkdtemp = promisify(fs.mkdtemp);
 const writeFile = promisify(fs.writeFile);
+const unlink = promisify(fs.unlink);
+const rmdir = promisify(fs.rmdir);
+const TEMP_RESOURCE_LIFETIME_MS = 60_000;
+
+function scheduleTemporaryResourceCleanup(resource: vscode.Uri): void {
+  const timer = setTimeout(async () => {
+    try {
+      await unlink(resource.fsPath);
+    } catch {
+      // Codex may already have removed the bridge file.
+    }
+    try {
+      await rmdir(dirname(resource.fsPath));
+    } catch {
+      // Leave non-empty temporary directories untouched.
+    }
+  }, TEMP_RESOURCE_LIFETIME_MS);
+  timer.unref();
+}
 
 function formatPdfSelectionPrompt(text: string): string {
   return `${PDF_SELECTION_PROMPT_PREFIX}\n\n${text}`;
@@ -94,11 +113,15 @@ export async function sendPdfSelectionToCodex(text: unknown): Promise<void> {
   }
 
   const resource = await createPdfSelectionResource(selectedText);
-  await vscode.commands.executeCommand(
-    CODEX_ADD_FILE_TO_THREAD_COMMAND,
-    resource
-  );
-  await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  try {
+    await vscode.commands.executeCommand(
+      CODEX_ADD_FILE_TO_THREAD_COMMAND,
+      resource
+    );
+    await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  } finally {
+    scheduleTemporaryResourceCleanup(resource);
+  }
 }
 
 export async function sendEditorSelectionToCodex(
@@ -130,11 +153,15 @@ export async function sendEditorSelectionToCodex(
     source,
     editor.document.languageId
   );
-  await vscode.commands.executeCommand(
-    CODEX_ADD_FILE_TO_THREAD_COMMAND,
-    resource
-  );
-  await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  try {
+    await vscode.commands.executeCommand(
+      CODEX_ADD_FILE_TO_THREAD_COMMAND,
+      resource
+    );
+    await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  } finally {
+    scheduleTemporaryResourceCleanup(resource);
+  }
 }
 
 export async function sendMarkdownTextToCodex(
@@ -161,9 +188,13 @@ export async function sendMarkdownTextToCodex(
     source,
     'markdown'
   );
-  await vscode.commands.executeCommand(
-    CODEX_ADD_FILE_TO_THREAD_COMMAND,
-    resource
-  );
-  await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  try {
+    await vscode.commands.executeCommand(
+      CODEX_ADD_FILE_TO_THREAD_COMMAND,
+      resource
+    );
+    await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+  } finally {
+    scheduleTemporaryResourceCleanup(resource);
+  }
 }

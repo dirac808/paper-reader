@@ -49,9 +49,15 @@ export type MarkdownAnnotationRecord = {
   selectedText: string;
   prefixText: string;
   suffixText: string;
+  textOffset: number;
   content: string;
   updatedAt: string;
   exportedPath?: string;
+};
+
+export type AnnotationChange = {
+  kind: 'pdf' | 'markdown';
+  documentHash: string;
 };
 
 type SqlStatement = {
@@ -150,7 +156,7 @@ function hasColumn(db: SqlDatabase, table: string, column: string): boolean {
   return tableInfo.some((item) => item.name === column);
 }
 
-export class NoteStore {
+export class NoteStore implements vscode.Disposable {
   public static async create(
     context: vscode.ExtensionContext
   ): Promise<NoteStore> {
@@ -179,6 +185,12 @@ export class NoteStore {
   }
 
   private readonly db: SqlDatabase;
+  private readonly annotationListeners = new Set<
+    (change: AnnotationChange) => void
+  >();
+  private annotationWatcher: vscode.FileSystemWatcher | undefined;
+  private persistTimer: NodeJS.Timer | undefined;
+  private persistDirty = false;
 
   private constructor(
     private readonly filePath: string,
@@ -189,6 +201,95 @@ export class NoteStore {
       ? new SQL.Database(new Uint8Array(fs.readFileSync(filePath)))
       : new SQL.Database();
     this.initialize();
+    this.watchAnnotationFiles();
+  }
+
+  public dispose(): void {
+    this.annotationWatcher?.dispose();
+    this.annotationListeners.clear();
+    this.flushPersist();
+    this.db.close();
+  }
+
+  public onDidChangeAnnotations(
+    listener: (change: AnnotationChange) => void
+  ): vscode.Disposable {
+    this.annotationListeners.add(listener);
+    return {
+      dispose: (): void => {
+        this.annotationListeners.delete(listener);
+      },
+    };
+  }
+
+  private emitAnnotationChange(change: AnnotationChange): void {
+    for (const listener of this.annotationListeners) {
+      listener(change);
+    }
+  }
+
+  private watchAnnotationFiles(): void {
+    const workspaceWithWatcher = vscode.workspace as typeof vscode.workspace & {
+      createFileSystemWatcher?: typeof vscode.workspace.createFileSystemWatcher;
+    };
+    if (!workspaceWithWatcher.createFileSystemWatcher) {
+      return;
+    }
+
+    const outputRoot = path.dirname(this.notesDirectory);
+    fs.mkdirSync(path.join(outputRoot, 'pdf-annotations'), { recursive: true });
+    fs.mkdirSync(path.join(outputRoot, 'markdown-annotations'), {
+      recursive: true,
+    });
+    this.annotationWatcher = workspaceWithWatcher.createFileSystemWatcher(
+      new vscode.RelativePattern(
+        outputRoot,
+        '{pdf-annotations,markdown-annotations}/*.md'
+      )
+    );
+    this.annotationWatcher.onDidDelete((uri) => {
+      this.removeAnnotationForDeletedFile(uri.fsPath);
+    });
+  }
+
+  private removeAnnotationForDeletedFile(filePath: string): void {
+    const pdfAnnotation = row<{ id: number; documentHash: string }>(
+      this.db,
+      'SELECT id, document_hash as documentHash FROM pdf_annotations WHERE exported_path = ?',
+      [filePath]
+    );
+    const markdownAnnotation = row<{ id: number; documentHash: string }>(
+      this.db,
+      'SELECT id, document_hash as documentHash FROM markdown_annotations WHERE exported_path = ?',
+      [filePath]
+    );
+    if (!pdfAnnotation && !markdownAnnotation) {
+      return;
+    }
+
+    if (pdfAnnotation) {
+      this.db.run('DELETE FROM pdf_annotations WHERE id = ?', [
+        pdfAnnotation.id,
+      ]);
+    }
+    if (markdownAnnotation) {
+      this.db.run('DELETE FROM markdown_annotations WHERE id = ?', [
+        markdownAnnotation.id,
+      ]);
+    }
+    this.persist();
+    if (pdfAnnotation) {
+      this.emitAnnotationChange({
+        kind: 'pdf',
+        documentHash: pdfAnnotation.documentHash,
+      });
+    }
+    if (markdownAnnotation) {
+      this.emitAnnotationChange({
+        kind: 'markdown',
+        documentHash: markdownAnnotation.documentHash,
+      });
+    }
   }
 
   private initialize(): void {
@@ -238,6 +339,7 @@ export class NoteStore {
         selected_text TEXT NOT NULL DEFAULT '',
         prefix_text TEXT NOT NULL DEFAULT '',
         suffix_text TEXT NOT NULL DEFAULT '',
+        text_offset INTEGER NOT NULL DEFAULT -1,
         content TEXT NOT NULL,
         exported_path TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -277,9 +379,30 @@ export class NoteStore {
         "ALTER TABLE markdown_annotations ADD COLUMN exported_path TEXT NOT NULL DEFAULT ''"
       );
     }
+    if (!hasColumn(this.db, 'markdown_annotations', 'text_offset')) {
+      this.db.run(
+        'ALTER TABLE markdown_annotations ADD COLUMN text_offset INTEGER NOT NULL DEFAULT -1'
+      );
+    }
   }
 
   private persist(): void {
+    this.persistDirty = true;
+    if (this.persistTimer) {
+      return;
+    }
+    this.persistTimer = setTimeout(() => this.flushPersist(), 200);
+  }
+
+  private flushPersist(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    if (!this.persistDirty) {
+      return;
+    }
+    this.persistDirty = false;
     const tempPath = `${this.filePath}.tmp`;
     fs.writeFileSync(tempPath, Buffer.from(this.db.export()));
     fs.renameSync(tempPath, this.filePath);
@@ -645,7 +768,6 @@ export class NoteStore {
       throw new Error('Unable to save PDF annotation.');
     }
 
-    this.persist();
     const annotation = row<PdfAnnotationRecord>(
       this.db,
       `SELECT
@@ -708,6 +830,7 @@ export class NoteStore {
         selected_text as selectedText,
         prefix_text as prefixText,
         suffix_text as suffixText,
+        text_offset as textOffset,
         content,
         updated_at as updatedAt,
         exported_path as exportedPath
@@ -777,6 +900,7 @@ export class NoteStore {
         selected_text as selectedText,
         prefix_text as prefixText,
         suffix_text as suffixText,
+        text_offset as textOffset,
         content,
         updated_at as updatedAt,
         exported_path as exportedPath
@@ -793,6 +917,7 @@ export class NoteStore {
     selectedText?: string;
     prefixText?: string;
     suffixText?: string;
+    textOffset?: number;
     content: string;
     id?: number;
   }): MarkdownAnnotationRecord {
@@ -809,13 +934,14 @@ export class NoteStore {
     if (input.id) {
       this.db.run(
         `UPDATE markdown_annotations
-        SET document_uri = ?, selected_text = ?, prefix_text = ?, suffix_text = ?, content = ?, updated_at = ?
+        SET document_uri = ?, selected_text = ?, prefix_text = ?, suffix_text = ?, text_offset = ?, content = ?, updated_at = ?
         WHERE id = ? AND document_hash = ?`,
         [
           input.documentUri,
           selectedText,
           input.prefixText || '',
           input.suffixText || '',
+          Number.isFinite(input.textOffset) ? input.textOffset : -1,
           content,
           now,
           input.id,
@@ -825,14 +951,15 @@ export class NoteStore {
     } else {
       this.db.run(
         `INSERT INTO markdown_annotations
-        (document_uri, document_hash, selected_text, prefix_text, suffix_text, content, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        (document_uri, document_hash, selected_text, prefix_text, suffix_text, text_offset, content, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           input.documentUri,
           input.documentHash,
           selectedText,
           input.prefixText || '',
           input.suffixText || '',
+          Number.isFinite(input.textOffset) ? input.textOffset : -1,
           content,
           now,
           now,
@@ -849,7 +976,6 @@ export class NoteStore {
       throw new Error('Unable to save Markdown annotation.');
     }
 
-    this.persist();
     const annotation = this.getMarkdownAnnotation(input.documentHash, input.id);
     if (!annotation) {
       throw new Error('Unable to load saved Markdown annotation.');

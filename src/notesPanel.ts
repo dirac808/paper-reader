@@ -17,7 +17,7 @@ export class NotesPanel {
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
-        retainContextWhenHidden: true,
+        retainContextWhenHidden: false,
       }
     );
     NotesPanel.currentPanel = new NotesPanel(panel, context, store);
@@ -35,7 +35,16 @@ export class NotesPanel {
     this.panel.webview.onDidReceiveMessage((message) => {
       switch (message.command) {
         case 'ready': {
-          const note = this.store.getOrCreateDefaultNote();
+          let note = this.store.getOrCreateDefaultNote();
+          const restored = message.state;
+          if (
+            restored &&
+            restored.dirty === true &&
+            restored.id === note.id &&
+            typeof restored.content === 'string'
+          ) {
+            note = this.store.saveNote(note.id, restored.content);
+          }
           this.panel.webview.postMessage({ command: 'loaded', note });
           break;
         }
@@ -100,15 +109,18 @@ export class NotesPanel {
   <script nonce="${nonce}" src="${markdownModeJs}"></script>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    let currentNoteId;
+    const restoredState = vscode.getState();
+    let currentNoteId = restoredState && restoredState.id;
     let saveTimer;
+    let dirty = Boolean(restoredState && restoredState.dirty);
+    let loading = false;
     const status = document.getElementById('status');
     const title = document.getElementById('title');
     const editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
       mode: 'markdown',
       lineNumbers: true,
       lineWrapping: true,
-      viewportMargin: Infinity
+      viewportMargin: 20
     });
 
     editor.addOverlay({
@@ -124,31 +136,53 @@ export class NotesPanel {
       status.textContent = value;
     }
 
+    function remember() {
+      if (!currentNoteId) return;
+      vscode.setState({
+        id: currentNoteId,
+        content: editor.getValue(),
+        dirty
+      });
+    }
+
     function save() {
+      if (!currentNoteId || !dirty) return;
       vscode.postMessage({ command: 'save', id: currentNoteId, content: editor.getValue() });
       setStatus('Saving');
+      remember();
     }
 
     editor.on('change', () => {
+      if (loading) return;
+      dirty = true;
       setStatus('Unsaved');
+      remember();
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(save, 1200);
     });
 
     document.getElementById('save').addEventListener('click', save);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') save();
+    });
+    window.addEventListener('beforeunload', save);
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.command === 'loaded' || message.command === 'saved') {
         currentNoteId = message.note.id;
         title.textContent = message.note.title;
         if (message.command === 'loaded') {
+          loading = true;
           editor.setValue(message.note.content);
           editor.clearHistory();
+          loading = false;
         }
+        dirty = false;
+        remember();
         setStatus(message.command === 'saved' ? 'Saved' : 'Ready');
       }
     });
-    vscode.postMessage({ command: 'ready' });
+    vscode.postMessage({ command: 'ready', state: restoredState });
   </script>
 </body>
 </html>`;

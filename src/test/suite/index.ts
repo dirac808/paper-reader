@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as Mocha from 'mocha';
 import * as glob from 'glob';
+import * as vscode from 'vscode';
 
 export function run(): Promise<void> {
   // Create the mocha test
@@ -26,7 +27,10 @@ export function run(): Promise<void> {
           if (failures > 0) {
             e(new Error(`${failures} tests failed.`));
           } else {
-            c();
+            vscode.commands.executeCommand('workbench.action.quit').then(
+              () => c(),
+              (error) => e(error)
+            );
           }
         });
       } catch (err) {

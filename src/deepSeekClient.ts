@@ -41,6 +41,11 @@ export type MarkdownTranslationProgress = {
   totalBatches: number;
 };
 
+export type CancellationSignal = {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested(listener: () => void): { dispose(): void };
+};
+
 const MAX_TOKENS_FIELD = 'max_tokens';
 const PLACEHOLDER_PREFIX = 'PAPER_READER_KEEP_BLOCK_';
 const TRANSLATION_PREFIX = 'PAPER_READER_TRANSLATE_';
@@ -68,18 +73,36 @@ type PostJsonImplementation = <T>(
   baseUrl: string,
   path: string,
   apiKey: string,
-  body: unknown
+  body: unknown,
+  cancellation?: CancellationSignal
 ) => Promise<T>;
 
 function postJson<T>(
   baseUrl: string,
   path: string,
   apiKey: string,
-  body: unknown
+  body: unknown,
+  cancellation?: CancellationSignal
 ): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (cancellation?.isCancellationRequested) {
+      reject(new Error('Paper Reader operation was cancelled.'));
+      return;
+    }
     const endpoint = new URL(path, baseUrl);
     const payload = Buffer.from(JSON.stringify(body), 'utf8');
+    let settled = false;
+    const cancellationState: {
+      subscription?: { dispose(): void };
+    } = {};
+    const finish = (action: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cancellationState.subscription?.dispose();
+      action();
+    };
     const request = https.request(
       {
         method: 'POST',
@@ -102,8 +125,10 @@ function postJson<T>(
           try {
             parsed = raw ? JSON.parse(raw) : {};
           } catch (error) {
-            reject(
-              new Error(`AI API returned invalid JSON: ${raw.slice(0, 200)}`)
+            finish(() =>
+              reject(
+                new Error(`AI API returned invalid JSON: ${raw.slice(0, 200)}`)
+              )
             );
             return;
           }
@@ -121,20 +146,31 @@ function postJson<T>(
               (parsed as DeepSeekResponse).error?.message
                 ? (parsed as DeepSeekResponse).error?.message
                 : raw;
-            reject(
-              new Error(
-                `AI API request failed (${response.statusCode}): ${message}`
+            finish(() =>
+              reject(
+                new Error(
+                  `AI API request failed (${response.statusCode}): ${message}`
+                )
               )
             );
             return;
           }
 
-          resolve(parsed as T);
+          finish(() => resolve(parsed as T));
         });
       }
     );
 
-    request.on('error', reject);
+    request.on('error', (error) => finish(() => reject(error)));
+    cancellationState.subscription = cancellation?.onCancellationRequested(
+      () => {
+        request.destroy(new Error('Paper Reader operation was cancelled.'));
+      }
+    );
+    if (cancellation?.isCancellationRequested) {
+      request.destroy(new Error('Paper Reader operation was cancelled.'));
+      return;
+    }
     request.write(payload);
     request.end();
   });
@@ -581,7 +617,8 @@ async function requestTranslationBatch(
   baseUrl: string,
   model: string,
   translationPrompt: string,
-  retryReason?: string
+  retryReason?: string,
+  cancellation?: CancellationSignal
 ): Promise<Map<string, string>> {
   const response = await postJsonImplementation<DeepSeekResponse>(
     baseUrl,
@@ -598,7 +635,8 @@ async function requestTranslationBatch(
       temperature: retryReason ? 0 : 0.2,
       [MAX_TOKENS_FIELD]: MAX_TRANSLATION_RESPONSE_TOKENS,
       stream: false,
-    }
+    },
+    cancellation
   );
 
   const translated = response.choices && response.choices[0]?.message?.content;
@@ -614,7 +652,8 @@ async function translateBatchWithRecovery(
   apiKey: string,
   baseUrl: string,
   model: string,
-  translationPrompt: string
+  translationPrompt: string,
+  cancellation?: CancellationSignal
 ): Promise<Map<string, string>> {
   let batchTranslations: Map<string, string>;
   try {
@@ -623,16 +662,22 @@ async function translateBatchWithRecovery(
       apiKey,
       baseUrl,
       model,
-      translationPrompt
+      translationPrompt,
+      undefined,
+      cancellation
     );
   } catch (error) {
+    if (cancellation?.isCancellationRequested) {
+      throw error;
+    }
     batchTranslations = await requestTranslationBatch(
       batch,
       apiKey,
       baseUrl,
       model,
       translationPrompt,
-      error instanceof Error ? error.message : String(error)
+      error instanceof Error ? error.message : String(error),
+      cancellation
     );
   }
 
@@ -642,13 +687,17 @@ async function translateBatchWithRecovery(
   }
 
   for (let attempt = 0; attempt < 2 && missingUnits.length; attempt += 1) {
+    if (cancellation?.isCancellationRequested) {
+      throw new Error('Paper Reader operation was cancelled.');
+    }
     const recovered = await requestTranslationBatch(
       missingUnits,
       apiKey,
       baseUrl,
       model,
       translationPrompt,
-      `Missing id(s): ${missingUnits.map((unit) => unit.id).join(', ')}`
+      `Missing id(s): ${missingUnits.map((unit) => unit.id).join(', ')}`,
+      cancellation
     );
     for (const unit of missingUnits) {
       const translatedText = recovered.get(unit.id);
@@ -677,7 +726,8 @@ async function translateMarkdownUnits(
   model: string,
   translationPrompt: string,
   concurrency: number,
-  onProgress?: (progress: MarkdownTranslationProgress) => void
+  onProgress?: (progress: MarkdownTranslationProgress) => void,
+  cancellation?: CancellationSignal
 ): Promise<Map<string, string>> {
   const translations = new Map<string, string>();
   const batches = splitIntoBatches(units);
@@ -689,6 +739,9 @@ async function translateMarkdownUnits(
   );
 
   const translateNextBatch = async (): Promise<void> => {
+    if (cancellation?.isCancellationRequested) {
+      throw new Error('Paper Reader operation was cancelled.');
+    }
     const index = nextBatchIndex;
     nextBatchIndex += 1;
     if (index >= batches.length) {
@@ -701,7 +754,8 @@ async function translateMarkdownUnits(
       apiKey,
       baseUrl,
       model,
-      translationPrompt
+      translationPrompt,
+      cancellation
     );
     for (const unit of batch) {
       const translatedText = batchTranslations.get(unit.id);
@@ -792,7 +846,8 @@ export async function translateAcademicSelection(
 
 export async function translateAcademicMarkdown(
   markdown: string,
-  onProgress?: (progress: MarkdownTranslationProgress) => void
+  onProgress?: (progress: MarkdownTranslationProgress) => void,
+  cancellation?: CancellationSignal
 ): Promise<string> {
   const source = normalizeLatexForMarkdown(markdown.trim());
   if (!source) {
@@ -825,7 +880,8 @@ export async function translateAcademicMarkdown(
     model,
     translationPrompt,
     translationConcurrency,
-    onProgress
+    onProgress,
+    cancellation
   );
   return protectedSource.restore(
     applyTranslations(template, units, translations).trim()

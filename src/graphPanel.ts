@@ -18,7 +18,7 @@ export class GraphPanel {
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
-        retainContextWhenHidden: true,
+        retainContextWhenHidden: false,
       }
     );
     GraphPanel.currentPanel = new GraphPanel(panel, store);
@@ -84,11 +84,16 @@ export class GraphPanel {
     const svg = d3.select('svg');
     const empty = document.getElementById('empty');
     const summary = document.getElementById('summary');
+    let simulation;
+    let simulationStopTimer;
+    let resizeTimer;
     document.getElementById('refresh').addEventListener('click', () => {
       vscode.postMessage({ command: 'refresh' });
     });
 
     function render(graph) {
+      if (simulation) simulation.stop();
+      window.clearTimeout(simulationStopTimer);
       svg.selectAll('*').remove();
       const width = window.innerWidth;
       const height = window.innerHeight;
@@ -101,11 +106,12 @@ export class GraphPanel {
         zoomLayer.attr('transform', event.transform);
       }));
 
-      const simulation = d3.forceSimulation(graph.nodes)
+      simulation = d3.forceSimulation(graph.nodes)
         .force('link', d3.forceLink(graph.links).id((d) => d.id).distance((d) => d.type === 'tag' ? 80 : 130))
         .force('charge', d3.forceManyBody().strength(-260))
         .force('center', d3.forceCenter(width / 2, (height + topOffset) / 2))
-        .force('collision', d3.forceCollide().radius(36));
+        .force('collision', d3.forceCollide().radius(36))
+        .alphaDecay(0.05);
 
       const link = zoomLayer.append('g')
         .selectAll('line')
@@ -151,6 +157,7 @@ export class GraphPanel {
           .attr('y2', (d) => d.target.y);
         node.attr('transform', (d) => 'translate(' + d.x + ',' + d.y + ')');
       });
+      simulationStopTimer = window.setTimeout(() => simulation && simulation.stop(), 5000);
     }
 
     window.addEventListener('message', (event) => {
@@ -158,7 +165,17 @@ export class GraphPanel {
         render(event.data.graph);
       }
     });
-    window.addEventListener('resize', () => vscode.postMessage({ command: 'refresh' }));
+    window.addEventListener('resize', () => {
+      window.clearTimeout(resizeTimer);
+      resizeTimer = window.setTimeout(() => vscode.postMessage({ command: 'refresh' }), 150);
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        if (simulation) simulation.stop();
+      } else {
+        vscode.postMessage({ command: 'refresh' });
+      }
+    });
     vscode.postMessage({ command: 'ready' });
   </script>
 </body>

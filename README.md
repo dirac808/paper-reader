@@ -44,13 +44,13 @@ D:\anaconda\envs\paperreader\Scripts\mineru.exe
 在本目录执行打包后会生成类似下面的文件：
 
 ```text
-paper-reader-1.2.2.vsix
+releases\paper-reader-1.3.0.vsix
 ```
 
 安装方式：
 
 ```powershell
-code --install-extension .\paper-reader-1.2.2.vsix
+code --install-extension .\releases\paper-reader-1.3.0.vsix --force
 ```
 
 也可以在 VS Code 中打开 Extensions 侧栏，点击右上角 `...`，选择 `Install from VSIX...`。

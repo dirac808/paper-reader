@@ -149,6 +149,7 @@ const getSelectionAnchor = () => {
         selectedText: text,
         prefixText: start >= 0 ? documentText.slice(Math.max(0, start - contextSize), start) : '',
         suffixText: start >= 0 ? documentText.slice(start + text.length, start + text.length + contextSize) : '',
+        textOffset: start,
     }
 }
 

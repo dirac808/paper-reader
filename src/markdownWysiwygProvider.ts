@@ -4,6 +4,7 @@ import { createHash } from 'crypto';
 import * as vscode from 'vscode';
 import { sendMarkdownTextToCodex } from './codexBridge';
 import { NoteStore } from './noteStore';
+import { computeMinimalTextChange, normalizeLineEndings } from './textChange';
 
 type WebviewMessage = {
   type: string;
@@ -14,6 +15,7 @@ type MarkdownSelectionAnchor = {
   selectedText?: unknown;
   prefixText?: unknown;
   suffixText?: unknown;
+  textOffset?: unknown;
 };
 
 type MarkdownOpenPayload = {
@@ -107,15 +109,26 @@ async function updateTextDocument(
   document: vscode.TextDocument,
   content: string
 ): Promise<boolean> {
-  const normalized = content.replace(/\r/g, '');
-  if (document.getText().replace(/\r/g, '') === normalized) {
+  const normalized = normalizeLineEndings(
+    content,
+    document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'
+  );
+  const current = document.getText();
+  if (current === normalized) {
+    return true;
+  }
+  const change = computeMinimalTextChange(current, normalized);
+  if (!change) {
     return true;
   }
   const edit = new vscode.WorkspaceEdit();
   edit.replace(
     document.uri,
-    new vscode.Range(0, 0, document.lineCount, 0),
-    normalized
+    new vscode.Range(
+      document.positionAt(change.start),
+      document.positionAt(change.end)
+    ),
+    change.text
   );
   return vscode.workspace.applyEdit(edit);
 }
@@ -253,7 +266,7 @@ export class MarkdownWysiwygProvider
       }
       syncTimer = setTimeout(() => {
         void flush();
-      }, 1200);
+      }, 150);
     };
 
     const emit = (type: string, messageContent?: unknown): void => {
@@ -279,6 +292,17 @@ export class MarkdownWysiwygProvider
         )
       );
     };
+    let annotationSubscription: vscode.Disposable | undefined;
+    void this.getNoteStore().then((store) => {
+      annotationSubscription = store.onDidChangeAnnotations((change) => {
+        if (
+          change.kind === 'markdown' &&
+          change.documentHash === getDocumentHash(document)
+        ) {
+          void sendMarkdownAnnotations();
+        }
+      });
+    });
 
     const documentSubscription = vscode.workspace.onDidChangeTextDocument(
       (event) => {
@@ -355,6 +379,9 @@ export class MarkdownWysiwygProvider
                 selectedText,
                 prefixText: String(anchor.prefixText || ''),
                 suffixText: String(anchor.suffixText || ''),
+                textOffset: Number.isFinite(Number(anchor.textOffset))
+                  ? Number(anchor.textOffset)
+                  : -1,
                 content: '## Note\n\n',
               });
               await openAnnotationMarkdown(annotation.exportedPath);
@@ -432,6 +459,7 @@ export class MarkdownWysiwygProvider
     webviewPanel.onDidDispose(() => {
       void flush();
       documentSubscription.dispose();
+      annotationSubscription?.dispose();
     });
 
     webview.html = readMarkdownHtml(this.context, webview, documentFolder);

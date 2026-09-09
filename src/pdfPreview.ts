@@ -77,7 +77,7 @@ export class PdfPreview extends Disposable {
               const store = await this.getNoteStore();
               await store.savePdfAnnotation({
                 id: typeof message.id === 'number' ? message.id : undefined,
-                documentHash: this.getDocumentHash(),
+                documentHash: await this.getDocumentHash(),
                 documentTitle: path.basename(this.resource.fsPath),
                 page: Number(message.page) || 1,
                 x: Number(message.x) || 0,
@@ -101,7 +101,7 @@ export class PdfPreview extends Disposable {
             try {
               const store = await this.getNoteStore();
               const annotation = await store.savePdfAnnotation({
-                documentHash: this.getDocumentHash(),
+                documentHash: await this.getDocumentHash(),
                 documentTitle: path.basename(this.resource.fsPath),
                 page: Number(message.page) || 1,
                 x: Number(message.x) || 0,
@@ -126,7 +126,7 @@ export class PdfPreview extends Disposable {
             try {
               const store = await this.getNoteStore();
               const annotation = store.getPdfAnnotation(
-                this.getDocumentHash(),
+                await this.getDocumentHash(),
                 Number(message.id),
                 path.basename(this.resource.fsPath)
               );
@@ -148,7 +148,7 @@ export class PdfPreview extends Disposable {
             try {
               const store = await this.getNoteStore();
               await store.deletePdfAnnotation(
-                this.getDocumentHash(),
+                await this.getDocumentHash(),
                 Number(message.id)
               );
               await this.sendPdfAnnotations();
@@ -186,12 +186,23 @@ export class PdfPreview extends Disposable {
       })
     );
 
+    void this.getNoteStore().then((store) => {
+      this._register(
+        store.onDidChangeAnnotations((change) => {
+          if (change.kind === 'pdf') {
+            void this.refreshAnnotationsIfMatching(change.documentHash);
+          }
+        })
+      );
+    });
+
     const watcher = this._register(
       vscode.workspace.createFileSystemWatcher(resource.fsPath)
     );
     this._register(
       watcher.onDidChange((e) => {
         if (e.toString() === this.resource.toString()) {
+          this._documentHashPromise = undefined;
           this.reload();
         }
       })
@@ -208,20 +219,40 @@ export class PdfPreview extends Disposable {
     this.update();
   }
 
-  private _documentHash: string | undefined;
+  private _documentHashPromise: Promise<string> | undefined;
 
-  private getDocumentHash(): string {
-    if (!this._documentHash) {
-      const hash = createHash('sha256');
-      hash.update(this.resource.fsPath);
-      try {
-        hash.update(fs.readFileSync(this.resource.fsPath));
-      } catch {
-        hash.update(this.resource.toString());
-      }
-      this._documentHash = hash.digest('hex');
+  private getDocumentHash(): Promise<string> {
+    if (!this._documentHashPromise) {
+      this._documentHashPromise = this.calculateDocumentHash();
     }
-    return this._documentHash;
+    return this._documentHashPromise;
+  }
+
+  private async calculateDocumentHash(): Promise<string> {
+    const hash = createHash('sha256');
+    hash.update(this.resource.fsPath);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const stream = fs.createReadStream(this.resource.fsPath);
+        stream.on('data', (chunk) => hash.update(chunk));
+        stream.on('end', resolve);
+        stream.on('error', reject);
+      });
+      return hash.digest('hex');
+    } catch {
+      const fallback = createHash('sha256');
+      fallback.update(this.resource.fsPath);
+      fallback.update(this.resource.toString());
+      return fallback.digest('hex');
+    }
+  }
+
+  private async refreshAnnotationsIfMatching(
+    documentHash: string
+  ): Promise<void> {
+    if (documentHash === (await this.getDocumentHash())) {
+      await this.sendPdfAnnotations();
+    }
   }
 
   private async sendPdfAnnotations(): Promise<void> {
@@ -229,7 +260,7 @@ export class PdfPreview extends Disposable {
     await this.webviewEditor.webview.postMessage({
       command: 'pdfAnnotations',
       annotations: store.getPdfAnnotations(
-        this.getDocumentHash(),
+        await this.getDocumentHash(),
         path.basename(this.resource.fsPath)
       ),
     });
@@ -303,6 +334,7 @@ export class PdfPreview extends Disposable {
       (config.get(`dipe-paper-reader.${key}`) as T | undefined);
     const settings = {
       cMapUrl: resolveAsUri('lib', 'web', 'cmaps/').toString(),
+      workerSrc: resolveAsUri('lib', 'build', 'pdf.worker.js').toString(),
       path: docPath.toString(),
       defaults: {
         cursor: getDefault<string>('default.cursor'),
@@ -320,7 +352,7 @@ export class PdfPreview extends Disposable {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="google" content="notranslate">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspSource}; script-src 'unsafe-inline' ${cspSource}; style-src 'unsafe-inline' ${cspSource}; img-src blob: data: ${cspSource};">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src ${cspSource}; script-src 'unsafe-inline' ${cspSource}; worker-src blob: ${cspSource}; style-src 'unsafe-inline' ${cspSource}; img-src blob: data: ${cspSource};">
 <meta id="pdf-preview-config" data-config="${escapeAttribute(
       JSON.stringify(settings)
     )}">
@@ -340,7 +372,6 @@ export class PdfPreview extends Disposable {
       'katex.min.css'
     )}">
 <script src="${resolveAsUri('lib', 'build', 'pdf.js')}"></script>
-<script src="${resolveAsUri('lib', 'build', 'pdf.worker.js')}"></script>
 <script src="${resolveAsUri('lib', 'web', 'viewer.js')}"></script>
 <script src="${resolveAsUri(
       'node_modules',

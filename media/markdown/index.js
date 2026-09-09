@@ -34,6 +34,8 @@ let currentMarkdownAnnotationAnchors = [];
 let annotationRenderFrame = 0;
 let annotationRenderTimer = 0;
 let mathRefreshTimer = 0;
+let documentSaveTimer = 0;
+let pendingDocumentContent;
 const markdownHighlightName = "paper-reader-markdown-annotations";
 
 const normalizeDisplayMathDelimiters = (markdown = "") => {
@@ -111,28 +113,46 @@ const findBestTextIndex = (fullText, annotation) => {
   return bestIndex;
 };
 
-const createRangeFromTextOffsets = (textNodes, start, end) => {
-  const range = document.createRange();
+const createTextNodeIndex = (textNodes) => {
   let cursor = 0;
-  let started = false;
+  return textNodes.map((node) => {
+    const entry = { node, start: cursor, end: cursor + (node.textContent || "").length };
+    cursor = entry.end;
+    return entry;
+  });
+};
 
-  for (const node of textNodes) {
-    const length = (node.textContent || "").length;
-    const nodeStart = cursor;
-    const nodeEnd = cursor + length;
-
-    if (!started && start >= nodeStart && start <= nodeEnd) {
-      range.setStart(node, Math.min(length, start - nodeStart));
-      started = true;
+const findTextNodeEntry = (entries, offset) => {
+  let low = 0;
+  let high = entries.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const entry = entries[middle];
+    if (offset < entry.start) {
+      high = middle - 1;
+    } else if (offset > entry.end) {
+      low = middle + 1;
+    } else {
+      return entry;
     }
-    if (started && end >= nodeStart && end <= nodeEnd) {
-      range.setEnd(node, Math.min(length, end - nodeStart));
-      return range;
-    }
-    cursor = nodeEnd;
   }
-
   return null;
+};
+
+const createRangeFromTextOffsets = (entries, start, end) => {
+  const startEntry = findTextNodeEntry(entries, start);
+  const endEntry = findTextNodeEntry(entries, end);
+  if (!startEntry || !endEntry) return null;
+  const range = document.createRange();
+  range.setStart(
+    startEntry.node,
+    Math.min((startEntry.node.textContent || "").length, start - startEntry.start),
+  );
+  range.setEnd(
+    endEntry.node,
+    Math.min((endEntry.node.textContent || "").length, end - endEntry.start),
+  );
+  return range;
 };
 
 const clearMarkdownAnnotationMarks = () => {
@@ -155,15 +175,22 @@ const renderMarkdownAnnotations = (annotations = []) => {
   layer.style.height = `${Math.max(layerHost.scrollHeight, layerHost.clientHeight)}px`;
   layerHost.appendChild(layer);
   const textNodes = collectTextNodes(root);
+  const textNodeIndex = createTextNodeIndex(textNodes);
   const fullText = textNodes.map((node) => node.textContent || "").join("");
   const highlightRanges = [];
   const supportsCssHighlight = !!window.CSS?.highlights && typeof window.Highlight === "function";
 
   annotations.forEach((annotation) => {
     const selectedText = annotation?.selectedText || "";
-    const index = findBestTextIndex(fullText, annotation);
+    const storedOffset = Number(annotation?.textOffset);
+    const index =
+      Number.isInteger(storedOffset) &&
+      storedOffset >= 0 &&
+      fullText.slice(storedOffset, storedOffset + selectedText.length) === selectedText
+        ? storedOffset
+        : findBestTextIndex(fullText, annotation);
     if (index < 0) return;
-    const range = createRangeFromTextOffsets(textNodes, index, index + selectedText.length);
+    const range = createRangeFromTextOffsets(textNodeIndex, index, index + selectedText.length);
     if (!range) return;
     const rect = range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
@@ -268,6 +295,21 @@ const scheduleMathRefresh = (editor, markdownConfig, rootPath) => {
   mathRefreshTimer = window.setTimeout(() => refreshRenderedMath(editor, markdownConfig, rootPath), 700);
 };
 
+const flushDocumentSave = (handler) => {
+  window.clearTimeout(documentSaveTimer);
+  documentSaveTimer = 0;
+  if (pendingDocumentContent === undefined) return;
+  const content = pendingDocumentContent;
+  pendingDocumentContent = undefined;
+  handler.emit("save", content);
+};
+
+const scheduleDocumentSave = (handler, content) => {
+  pendingDocumentContent = content;
+  window.clearTimeout(documentSaveTimer);
+  documentSaveTimer = window.setTimeout(() => flushDocumentSave(handler), 150);
+};
+
 const getNormalizedEditorValue = (editor) => normalizeDisplayMathDelimiters(editor?.getValue?.() || "");
 
 handler.on("open", async (md) => {
@@ -343,7 +385,7 @@ handler.on("open", async (md) => {
       handler.emit('editViewerSettings', editor.exportViewerSettings())
     },
     input(content) {
-      handler.emit("save", content)
+      scheduleDocumentSave(handler, content)
       if (currentMarkdownAnnotations.length > 0) {
         scheduleMarkdownAnnotationRender(3500);
       }
@@ -455,6 +497,11 @@ handler.on("open", async (md) => {
       window.addEventListener("resize", () => scheduleMarkdownAnnotationRender(120));
       scheduleMathRefresh(editor, markdown, rootPath);
       handler.emit("loadMarkdownAnnotations");
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") {
+          flushDocumentSave(handler);
+        }
+      });
     }
   })
   bindShortcut(handler, editor);

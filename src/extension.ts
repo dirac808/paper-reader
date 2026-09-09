@@ -56,6 +56,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isCancellationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /operation was cancelled|canceled/i.test(error.message)
+  );
+}
+
 async function openAnnotationMarkdown(
   exportedPath: string | undefined
 ): Promise<void> {
@@ -188,6 +195,7 @@ export function activate(
   const getNoteStore = (): Promise<NoteStore> => {
     if (!noteStorePromise) {
       noteStorePromise = NoteStore.create(context);
+      void noteStorePromise.then((store) => context.subscriptions.push(store));
     }
     return noteStorePromise;
   };
@@ -209,7 +217,7 @@ export function activate(
       {
         webviewOptions: {
           enableFindWidget: false, // default
-          retainContextWhenHidden: true,
+          retainContextWhenHidden: false,
         },
       }
     )
@@ -220,7 +228,7 @@ export function activate(
       new MarkdownWysiwygProvider(context, getNoteStore),
       {
         webviewOptions: {
-          retainContextWhenHidden: true,
+          retainContextWhenHidden: false,
         },
       }
     )
@@ -445,6 +453,12 @@ export function activate(
           activeTranslationTasks.add(taskKey);
           translatePdfToMarkdownWindow(uri)
             .catch((error) => {
+              if (isCancellationError(error)) {
+                vscode.window.showInformationMessage(
+                  'Paper Reader PDF translation cancelled.'
+                );
+                return;
+              }
               vscode.window.showErrorMessage(
                 `Unable to translate PDF: ${
                   error instanceof Error ? error.message : String(error)
