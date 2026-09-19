@@ -338,9 +338,111 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 
 /* CodeMirror 6 live preview surface. The document remains a normal CM document;
    only visible formula and image ranges are replaced with widgets. */
+#paper-reader-shell {
+    display: grid;
+    grid-template-rows: 36px minmax(0, 1fr);
+    height: 100%;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-editor-background);
+}
+
+#paper-reader-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    height: 36px;
+    padding: 0 6px;
+    border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    background: var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background));
+    overflow: hidden;
+}
+
+#paper-reader-toolbar button {
+    display: inline-flex;
+    flex: 0 0 28px;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    color: var(--vscode-icon-foreground, var(--vscode-editor-foreground));
+    background: transparent;
+    cursor: pointer;
+}
+
+#paper-reader-toolbar button:hover,
+#paper-reader-toolbar button:focus-visible,
+#paper-reader-toolbar button[aria-pressed="true"] {
+    border-color: var(--vscode-toolbar-hoverOutline, transparent);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+    outline: none;
+}
+
+.paper-reader-toolbar-separator {
+    flex: 0 0 1px;
+    width: 1px;
+    height: 18px;
+    margin: 0 3px;
+    background: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+}
+
+.paper-reader-toolbar-spacer {
+    flex: 1 1 auto;
+}
+
+#paper-reader-workspace {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-height: 0;
+}
+
+#paper-reader-outline {
+    width: min(280px, 32vw);
+    min-width: 180px;
+    border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    overflow: auto;
+}
+
+#paper-reader-outline[hidden] {
+    display: none;
+}
+
+.paper-reader-outline-item {
+    display: block;
+    width: 100%;
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 0;
+    color: var(--vscode-sideBar-foreground, var(--vscode-editor-foreground));
+    background: transparent;
+    font: 13px/20px var(--vscode-font-family, sans-serif);
+    text-align: left;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.paper-reader-outline-item:hover,
+.paper-reader-outline-item:focus-visible {
+    background: var(--vscode-list-hoverBackground);
+    outline: none;
+}
+
+.paper-reader-outline-item[data-level="2"] { padding-left: 22px; }
+.paper-reader-outline-item[data-level="3"] { padding-left: 34px; }
+.paper-reader-outline-item[data-level="4"] { padding-left: 46px; }
+.paper-reader-outline-item[data-level="5"] { padding-left: 58px; }
+.paper-reader-outline-item[data-level="6"] { padding-left: 70px; }
+
 #paper-reader-editor {
-    position: absolute;
-    inset: 0;
+    position: relative;
+    min-width: 0;
+    min-height: 0;
     color: var(--vscode-editor-foreground);
     background: var(--vscode-editor-background);
 }
@@ -355,6 +457,50 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     caret-color: var(--vscode-editorCursor-foreground, currentColor);
     font-size: var(--vscode-editor-font-size, 14px);
     line-height: 1.6;
+}
+
+#paper-reader-editor .cm-panels {
+    color: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    border-color: var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    font: 13px/20px var(--vscode-font-family, sans-serif);
+}
+
+#paper-reader-editor .cm-search {
+    padding: 5px 8px;
+}
+
+#paper-reader-editor .cm-search input,
+#paper-reader-editor .cm-search button,
+#paper-reader-editor .cm-search label {
+    color: inherit;
+    font: inherit;
+}
+
+#paper-reader-editor .cm-search input {
+    height: 24px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-input-background, var(--vscode-editor-background));
+}
+
+#paper-reader-editor .cm-search input:focus {
+    border-color: var(--vscode-focusBorder);
+    outline: none;
+}
+
+#paper-reader-editor .cm-search button {
+    min-height: 24px;
+    border: 1px solid var(--vscode-button-border, transparent);
+    border-radius: 2px;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-editor-foreground));
+    background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+    cursor: pointer;
+}
+
+#paper-reader-editor .cm-search button:hover {
+    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
 }
 
 #paper-reader-editor .cm-line.cm-header {
@@ -374,6 +520,55 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     background: transparent;
     cursor: text;
     text-align: center;
+}
+
+.paper-reader-cm-inline-math,
+.paper-reader-cm-script {
+    display: inline;
+    margin: 0 1px;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    font: inherit;
+    cursor: text;
+}
+
+.paper-reader-cm-inline-math:hover,
+.paper-reader-cm-script:hover {
+    border-radius: 2px;
+    outline: 1px solid var(--vscode-focusBorder);
+    outline-offset: 2px;
+}
+
+.paper-reader-cm-inline-math .katex {
+    font-size: 1.05em;
+}
+
+.paper-reader-cm-heading-1,
+.paper-reader-cm-heading-2,
+.paper-reader-cm-heading-3,
+.paper-reader-cm-heading-4,
+.paper-reader-cm-heading-5,
+.paper-reader-cm-heading-6 {
+    font-family: var(--vscode-font-family, sans-serif);
+    font-weight: 600;
+    line-height: 1.35;
+}
+
+.paper-reader-cm-heading-1 {
+    margin-top: 20px !important;
+    font-size: 1.8em;
+}
+
+.paper-reader-cm-heading-2 {
+    margin-top: 16px !important;
+    font-size: 1.45em;
+}
+
+.paper-reader-cm-heading-3 {
+    margin-top: 12px !important;
+    font-size: 1.2em;
 }
 
 .paper-reader-cm-math:hover,
@@ -413,8 +608,27 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     background: var(--vscode-editor-background);
     font-size: 10px;
     cursor: pointer;
+    vertical-align: middle;
 }
 
 .paper-reader-cm-note-anchor:hover {
     background: var(--vscode-editor-selectionBackground);
+}
+
+.paper-reader-cm-note-anchor .codicon {
+    font-size: 12px;
+}
+
+.paper-reader-cm-note-count {
+    position: absolute;
+    top: -7px;
+    right: -8px;
+    min-width: 13px;
+    height: 13px;
+    padding: 0 2px;
+    border-radius: 7px;
+    color: var(--vscode-badge-foreground, #fff);
+    background: var(--vscode-badge-background, #4d4d4d);
+    font: 9px/13px var(--vscode-font-family, sans-serif);
+    text-align: center;
 }

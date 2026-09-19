@@ -21,8 +21,18 @@ assert.ok(editor.includes('ViewPlugin.fromClass'));
 assert.ok(editor.includes('view.visibleRanges'));
 assert.ok(editor.includes('view.state.sliceDoc(startLine, endLine)'));
 assert.ok(editor.includes('window.paperReaderMarkdownPerformance'));
+assert.ok(editor.includes('inlineMathPattern'));
+assert.ok(editor.includes('superscriptPattern'));
+assert.ok(editor.includes('paper-reader-cm-heading-'));
+assert.ok(editor.includes('codicon-notebook'));
+assert.ok(editor.includes('documentBlockPreview'));
+assert.ok(editor.includes('renderOutline'));
+assert.ok(editor.includes('runToolbarCommand'));
 assert.ok(!html.includes('dist/index.min.js'));
 assert.ok(html.includes('codemirror.bundle.js'));
+assert.ok(html.includes('codicons/codicon.css'));
+assert.ok(html.includes('paper-reader-toolbar'));
+assert.ok(html.includes('data-command="outline"'));
 assert.ok(bundle.length > 100000, 'CodeMirror bundle was not generated');
 
 const source = Array.from({ length: 10000 }, (_, index) =>

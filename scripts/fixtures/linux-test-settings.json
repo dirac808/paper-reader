@@ -1,0 +1,6 @@
+{
+  "security.workspace.trust.enabled": false,
+  "workbench.editorAssociations": {
+    "*.md": "paper-reader.markdownEditor"
+  }
+}

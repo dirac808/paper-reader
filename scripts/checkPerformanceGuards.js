@@ -40,5 +40,13 @@ assert.ok(markdownEditor.includes("view.visibleRanges"));
 assert.ok(markdownEditor.includes("EditorState"));
 assert.ok(markdownEditor.includes("Decoration.replace"));
 assert.ok(!markdownEditor.includes("doc.toString()") || markdownEditor.includes("selectionAnchor"));
+assert.ok(markdownEditor.includes("documentBlockPreview"));
+assert.ok(markdownEditor.includes("collectDocumentBlocks"));
+assert.ok(!/documentBlockPreview[\s\S]{0,900}viewportChanged/.test(markdownEditor));
+assert.ok(markdownEditor.includes("const documentBlockPreview = StateField.define"));
+assert.ok(markdownEditor.includes("provide: (field) => EditorView.decorations.from"));
+assert.ok(markdownHtml.includes('data-command="search"'));
+assert.ok(markdownEditor.includes("openSearchPanel"));
+assert.ok(markdownEditor.includes("searchKeymap"));
 
 console.log("Performance guard checks passed.");

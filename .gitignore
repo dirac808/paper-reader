@@ -1,4 +1,5 @@
 out
 node_modules
 *.vsix
+paper-reader-*.png
 .vscode-test/

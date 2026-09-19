@@ -58,13 +58,13 @@ MinerU API 绑定到公网地址；应绑定 VPN 地址并用防火墙限制来�
 在本目录执行打包后会生成类似下面的文件：
 
 ```text
-paper-reader-1.4.0.vsix
+paper-reader-1.4.1.vsix
 ```
 
 安装方式：
 
 ```powershell
-code --install-extension .\paper-reader-1.4.0.vsix --force
+code --install-extension .\paper-reader-1.4.1.vsix --force
 ```
 
 也可以在 VS Code 中打开 Extensions 侧栏，点击右上角 `...`，选择 `Install from VSIX...`。

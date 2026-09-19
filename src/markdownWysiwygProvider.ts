@@ -395,11 +395,35 @@ export class MarkdownWysiwygProvider
           case 'openMarkdownAnnotationNote':
             {
               const store = await this.getNoteStore();
-              const annotation = store.getMarkdownAnnotation(
-                getDocumentHash(document),
-                Number(message.content),
-                getDocumentTitle(document)
-              );
+              const ids = (Array.isArray(message.content)
+                ? message.content
+                : [message.content]
+              )
+                .map(Number)
+                .filter(Number.isFinite);
+              const annotations = ids
+                .map((id) =>
+                  store.getMarkdownAnnotation(
+                    getDocumentHash(document),
+                    id,
+                    getDocumentTitle(document)
+                  )
+                )
+                .filter(
+                  (item): item is NonNullable<typeof item> => item !== undefined
+                );
+              let annotation = annotations[0];
+              if (annotations.length > 1) {
+                const selected = await vscode.window.showQuickPick(
+                  annotations.map((item, index) => ({
+                    label: `Note ${index + 1}`,
+                    description: path.basename(item.exportedPath || ''),
+                    annotation: item,
+                  })),
+                  { placeHolder: 'Select the note to open' }
+                );
+                annotation = selected?.annotation;
+              }
               if (!annotation) {
                 await sendMarkdownAnnotations();
                 break;

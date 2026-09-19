@@ -21,6 +21,8 @@ const REQUIRED_RUNTIME_ASSETS = [
   'lib/build/pdf.worker.js',
   'lib/web/standard_fonts/FoxitSans.pfb',
   'media/markdown/codemirror.bundle.js',
+  'media/markdown/codicons/codicon.css',
+  'media/markdown/codicons/codicon.ttf',
   'media/markdown/dist/js/katex/katex.min.css',
   'node_modules/dommatrix/dist/dommatrix.js',
   'node_modules/pdfjs-dist/legacy/build/pdf.js',
@@ -154,7 +156,7 @@ suite('Paper Reader extension integration', () => {
     const markdownPath = path.join(directory, 'integration.md');
     await fs.promises.writeFile(
       markdownPath,
-      '# Integration\n\n$$\nx^2 + y^2 = z^2\n$$\n',
+      '# Integration\n\nAuthor<sup>*</sup> uses $\\rho + \\sigma$ inline.\n\n$$\nx^2 + y^2 = z^2\n$$\n',
       'utf8'
     );
 
