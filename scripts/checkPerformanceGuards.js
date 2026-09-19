@@ -9,6 +9,8 @@ const extension = read("src/extension.ts");
 const pdfMain = read("lib/main.js");
 const pdfPreview = read("src/pdfPreview.ts");
 const markdown = read("media/markdown/index.js");
+const markdownHtml = read("media/markdown/index.html");
+const markdownEditor = read("media/markdown/codemirror-entry.js");
 const markdownProvider = read("src/markdownWysiwygProvider.ts");
 const notes = read("src/notesPanel.ts");
 
@@ -32,5 +34,11 @@ assert.ok(pdfMain.includes("PDFViewerApplication.open(config.path, loadOpts)"));
 assert.ok(!pdfMain.includes("PDFViewerApplication.open(config.path).then"));
 assert.ok(markdown.includes("scheduleDocumentSave(handler, content)"));
 assert.ok(markdownProvider.includes("computeMinimalTextChange"));
+assert.ok(markdownHtml.includes("codemirror.bundle.js"));
+assert.ok(!markdownHtml.includes("dist/index.min.js"));
+assert.ok(markdownEditor.includes("view.visibleRanges"));
+assert.ok(markdownEditor.includes("EditorState"));
+assert.ok(markdownEditor.includes("Decoration.replace"));
+assert.ok(!markdownEditor.includes("doc.toString()") || markdownEditor.includes("selectionAnchor"));
 
 console.log("Performance guard checks passed.");

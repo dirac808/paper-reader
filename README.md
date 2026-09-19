@@ -58,13 +58,13 @@ MinerU API 绑定到公网地址；应绑定 VPN 地址并用防火墙限制来�
 在本目录执行打包后会生成类似下面的文件：
 
 ```text
-releases\paper-reader-1.3.0.vsix
+paper-reader-1.4.0.vsix
 ```
 
 安装方式：
 
 ```powershell
-code --install-extension .\releases\paper-reader-1.3.0.vsix --force
+code --install-extension .\paper-reader-1.4.0.vsix --force
 ```
 
 也可以在 VS Code 中打开 Extensions 侧栏，点击右上角 `...`，选择 `Install from VSIX...`。
@@ -145,6 +145,15 @@ paper-reader-output/
 - AI API 是否可用。
 - Codex 插件接口是否可用。
 
+### Markdown 性能架构
+
+Paper Reader Markdown 使用 CodeMirror 6 + Lezer 作为编辑核心。Markdown 源文档始终保留在
+增量文档模型中；公式和图片只在当前可见区创建 widget，点击 widget 会恢复对应 Markdown
+源码块。这样长文档滚动和输入不会触发全文 HTML 重建，也不会因为屏幕外公式创建 DOM。
+
+开发环境可以查看 Markdown Webview 的 `window.paperReaderMarkdownPerformance`，其中包含
+可见区扫描字节数、渲染 widget 数量、更新次数和最大更新耗时。
+
 ## 开发
 
 安装依赖：
@@ -187,6 +196,8 @@ npm run package
 npm run compile
 npm run lint
 npm run test:unit
+npm run test:performance
+npm run test:markdown-performance
 npm run package
 ```
 

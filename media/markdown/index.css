@@ -335,3 +335,86 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     min-width: 0 !important;
     width: 100% !important;
 }
+
+/* CodeMirror 6 live preview surface. The document remains a normal CM document;
+   only visible formula and image ranges are replaced with widgets. */
+#paper-reader-editor {
+    position: absolute;
+    inset: 0;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-editor-background);
+}
+
+#paper-reader-editor .cm-editor {
+    height: 100%;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-editor-background);
+}
+
+#paper-reader-editor .cm-content {
+    caret-color: var(--vscode-editorCursor-foreground, currentColor);
+    font-size: var(--vscode-editor-font-size, 14px);
+    line-height: 1.6;
+}
+
+#paper-reader-editor .cm-line.cm-header {
+    font-weight: 600;
+}
+
+.paper-reader-cm-math,
+.paper-reader-cm-image {
+    display: block;
+    width: fit-content;
+    max-width: min(100%, 1100px);
+    margin: 12px auto;
+    padding: 10px 16px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: inherit;
+    background: transparent;
+    cursor: text;
+    text-align: center;
+}
+
+.paper-reader-cm-math:hover,
+.paper-reader-cm-image:hover {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.08));
+}
+
+.paper-reader-cm-math .katex-display {
+    margin: 0;
+    overflow: auto hidden;
+}
+
+.paper-reader-cm-image img {
+    display: block;
+    max-width: min(100%, 960px);
+    max-height: 70vh;
+    object-fit: contain;
+}
+
+.paper-reader-cm-note-highlight {
+    background: rgba(245, 215, 110, 0.28);
+    border-bottom: 1px solid rgba(245, 215, 110, 0.58);
+}
+
+.paper-reader-cm-note-anchor {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-left: 5px;
+    padding: 0;
+    border: 1px solid var(--vscode-charts-yellow, #cca700);
+    border-radius: 50%;
+    color: var(--vscode-charts-yellow, #cca700);
+    background: var(--vscode-editor-background);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.paper-reader-cm-note-anchor:hover {
+    background: var(--vscode-editor-selectionBackground);
+}

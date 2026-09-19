@@ -20,8 +20,8 @@ const EXPECTED_COMMANDS = [
 const REQUIRED_RUNTIME_ASSETS = [
   'lib/build/pdf.worker.js',
   'lib/web/standard_fonts/FoxitSans.pfb',
-  'media/markdown/annotationModel.js',
-  'media/markdown/dist/index.min.js',
+  'media/markdown/codemirror.bundle.js',
+  'media/markdown/dist/js/katex/katex.min.css',
   'node_modules/dommatrix/dist/dommatrix.js',
   'node_modules/pdfjs-dist/legacy/build/pdf.js',
   'node_modules/pdfjs-dist/legacy/build/pdf.worker.js',
