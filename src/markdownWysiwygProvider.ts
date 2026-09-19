@@ -384,8 +384,8 @@ export class MarkdownWysiwygProvider
                   : -1,
                 content: '## Note\n\n',
               });
-              await openAnnotationMarkdown(annotation.exportedPath);
               await sendMarkdownAnnotations();
+              await openAnnotationMarkdown(annotation.exportedPath);
               vscode.window.showInformationMessage('Markdown note created.');
             }
             break;

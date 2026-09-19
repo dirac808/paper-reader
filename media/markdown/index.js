@@ -1,5 +1,10 @@
 import { getToolbar, bindShortcut, createContextMenu, setAIAvailable } from "./util.js";
 import { mapVscodeLanguageToVditorLang } from "./lang.js";
+import {
+  createAnnotationDomRange,
+  createAnnotationTextIndex,
+  findAnnotationTextRange,
+} from "./annotationModel.js";
 
 const enableMathEditorLineWrap = () => {
   document
@@ -28,7 +33,6 @@ const enableMathEditorLineWrap = () => {
     });
 };
 
-const normalizeText = (text) => (text || "").replace(/\s+/g, " ").trim();
 let currentMarkdownAnnotations = [];
 let currentMarkdownAnnotationAnchors = [];
 let annotationRenderFrame = 0;
@@ -58,103 +62,6 @@ const getAnnotationLayerHost = () => {
   return root.closest(".vditor-content") || root;
 };
 
-const collectTextNodes = (root) => {
-  const nodes = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      if (!normalizeText(node.textContent)) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      if (node.parentElement?.closest?.(".paper-reader-md-note-anchor, script, style")) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  let node = walker.nextNode();
-  while (node) {
-    nodes.push(node);
-    node = walker.nextNode();
-  }
-  return nodes;
-};
-
-const scoreTextAnchor = (fullText, index, annotation) => {
-  const selectedText = annotation?.selectedText || "";
-  const prefixText = annotation?.prefixText || "";
-  const suffixText = annotation?.suffixText || "";
-  let score = 0;
-  if (prefixText && fullText.slice(Math.max(0, index - prefixText.length), index) === prefixText) {
-    score += prefixText.length;
-  }
-  if (
-    suffixText &&
-    fullText.slice(index + selectedText.length, index + selectedText.length + suffixText.length) === suffixText
-  ) {
-    score += suffixText.length;
-  }
-  return score;
-};
-
-const findBestTextIndex = (fullText, annotation) => {
-  const selectedText = annotation?.selectedText || "";
-  if (!selectedText) return -1;
-  let bestIndex = -1;
-  let bestScore = -1;
-  let index = fullText.indexOf(selectedText);
-  while (index >= 0) {
-    const score = scoreTextAnchor(fullText, index, annotation);
-    if (score > bestScore) {
-      bestIndex = index;
-      bestScore = score;
-    }
-    index = fullText.indexOf(selectedText, index + Math.max(1, selectedText.length));
-  }
-  return bestIndex;
-};
-
-const createTextNodeIndex = (textNodes) => {
-  let cursor = 0;
-  return textNodes.map((node) => {
-    const entry = { node, start: cursor, end: cursor + (node.textContent || "").length };
-    cursor = entry.end;
-    return entry;
-  });
-};
-
-const findTextNodeEntry = (entries, offset) => {
-  let low = 0;
-  let high = entries.length - 1;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const entry = entries[middle];
-    if (offset < entry.start) {
-      high = middle - 1;
-    } else if (offset > entry.end) {
-      low = middle + 1;
-    } else {
-      return entry;
-    }
-  }
-  return null;
-};
-
-const createRangeFromTextOffsets = (entries, start, end) => {
-  const startEntry = findTextNodeEntry(entries, start);
-  const endEntry = findTextNodeEntry(entries, end);
-  if (!startEntry || !endEntry) return null;
-  const range = document.createRange();
-  range.setStart(
-    startEntry.node,
-    Math.min((startEntry.node.textContent || "").length, start - startEntry.start),
-  );
-  range.setEnd(
-    endEntry.node,
-    Math.min((endEntry.node.textContent || "").length, end - endEntry.start),
-  );
-  return range;
-};
-
 const clearMarkdownAnnotationMarks = () => {
   document.querySelectorAll(".paper-reader-md-note-layer").forEach((node) => node.remove());
   if (window.CSS?.highlights?.delete) {
@@ -174,23 +81,14 @@ const renderMarkdownAnnotations = (annotations = []) => {
   layer.style.width = `${Math.max(layerHost.scrollWidth, layerHost.clientWidth)}px`;
   layer.style.height = `${Math.max(layerHost.scrollHeight, layerHost.clientHeight)}px`;
   layerHost.appendChild(layer);
-  const textNodes = collectTextNodes(root);
-  const textNodeIndex = createTextNodeIndex(textNodes);
-  const fullText = textNodes.map((node) => node.textContent || "").join("");
+  const textIndex = createAnnotationTextIndex(root);
   const highlightRanges = [];
   const supportsCssHighlight = !!window.CSS?.highlights && typeof window.Highlight === "function";
 
   annotations.forEach((annotation) => {
-    const selectedText = annotation?.selectedText || "";
-    const storedOffset = Number(annotation?.textOffset);
-    const index =
-      Number.isInteger(storedOffset) &&
-      storedOffset >= 0 &&
-      fullText.slice(storedOffset, storedOffset + selectedText.length) === selectedText
-        ? storedOffset
-        : findBestTextIndex(fullText, annotation);
-    if (index < 0) return;
-    const range = createRangeFromTextOffsets(textNodeIndex, index, index + selectedText.length);
+    const match = findAnnotationTextRange(textIndex.text, annotation);
+    if (!match) return;
+    const range = createAnnotationDomRange(textIndex.entries, match.start, match.end);
     if (!range) return;
     const rect = range.getBoundingClientRect();
     if (!rect || (rect.width === 0 && rect.height === 0)) return;
@@ -203,6 +101,7 @@ const renderMarkdownAnnotations = (annotations = []) => {
     anchor.type = "button";
     anchor.className = "paper-reader-md-note-anchor";
     anchor.title = "Open note";
+    anchor.setAttribute("aria-label", "Open note for selected text");
     anchor.dataset.annotationId = String(annotation.id);
     anchor.innerHTML = '<span class="codicon codicon-notebook" aria-hidden="true"></span>';
     anchor.addEventListener("click", (event) => {

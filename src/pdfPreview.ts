@@ -13,7 +13,20 @@ function escapeAttribute(value: string | vscode.Uri): string {
 
 type PreviewState = 'Disposed' | 'Visible' | 'Active';
 
+export type PdfWebviewStatus =
+  | { state: 'loading'; stage: string }
+  | { state: 'ready'; pagesCount: number }
+  | { state: 'error'; details: string };
+
 export class PdfPreview extends Disposable {
+  private static readonly webviewStatuses = new Map<string, PdfWebviewStatus>();
+
+  public static getWebviewStatus(
+    resource: vscode.Uri
+  ): PdfWebviewStatus | undefined {
+    return this.webviewStatuses.get(resource.toString());
+  }
+
   private _previewState: PreviewState = 'Visible';
 
   constructor(
@@ -23,6 +36,10 @@ export class PdfPreview extends Disposable {
     private readonly getNoteStore: () => Promise<NoteStore>
   ) {
     super();
+    PdfPreview.webviewStatuses.set(resource.toString(), {
+      state: 'loading',
+      stage: 'html-assigned',
+    });
     const resourceRoot = resource.with({
       path: resource.path.replace(/\/[^/]+?\.\w+$/, '/'),
     });
@@ -35,6 +52,39 @@ export class PdfPreview extends Disposable {
     this._register(
       webviewEditor.webview.onDidReceiveMessage(async (message) => {
         switch (message.command || message.type) {
+          case 'webviewProgress': {
+            PdfPreview.webviewStatuses.set(this.resource.toString(), {
+              state: 'loading',
+              stage: String(message.stage || 'unknown'),
+            });
+            break;
+          }
+          case 'webviewError': {
+            const details = [
+              String(message.message || 'Unknown webview error'),
+              message.source
+                ? `${message.source}:${Number(message.line) || 0}:${
+                    Number(message.column) || 0
+                  }`
+                : '',
+              String(message.stack || ''),
+            ]
+              .filter(Boolean)
+              .join('\n');
+            PdfPreview.webviewStatuses.set(this.resource.toString(), {
+              state: 'error',
+              details,
+            });
+            console.error(`[Paper Reader Webview] ${details}`);
+            break;
+          }
+          case 'webviewReady': {
+            PdfPreview.webviewStatuses.set(this.resource.toString(), {
+              state: 'ready',
+              pagesCount: Number(message.pagesCount) || 0,
+            });
+            break;
+          }
           case 'sendToCodex': {
             try {
               await sendPdfSelectionToCodex(message.text);
@@ -183,6 +233,7 @@ export class PdfPreview extends Disposable {
     this._register(
       webviewEditor.onDidDispose(() => {
         this._previewState = 'Disposed';
+        PdfPreview.webviewStatuses.delete(this.resource.toString());
       })
     );
 
@@ -335,6 +386,11 @@ export class PdfPreview extends Disposable {
     const settings = {
       cMapUrl: resolveAsUri('lib', 'web', 'cmaps/').toString(),
       workerSrc: resolveAsUri('lib', 'build', 'pdf.worker.js').toString(),
+      standardFontDataUrl: resolveAsUri(
+        'lib',
+        'web',
+        'standard_fonts/'
+      ).toString(),
       path: docPath.toString(),
       defaults: {
         cursor: getDefault<string>('default.cursor'),
@@ -372,6 +428,7 @@ export class PdfPreview extends Disposable {
       'katex.min.css'
     )}">
 <script src="${resolveAsUri('lib', 'build', 'pdf.js')}"></script>
+<script src="${resolveAsUri('lib', 'build', 'pdf.worker.js')}"></script>
 <script src="${resolveAsUri('lib', 'web', 'viewer.js')}"></script>
 <script src="${resolveAsUri(
       'node_modules',

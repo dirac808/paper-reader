@@ -4,6 +4,11 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+type PdfWebviewStatus =
+  | { state: 'loading'; stage: string }
+  | { state: 'ready'; pagesCount: number }
+  | { state: 'error'; details: string };
+
 const EXTENSION_ID = 'paper-reader-lab.paper-reader';
 const EXPECTED_COMMANDS = [
   'dipe-paper-reader.openPdf',
@@ -14,6 +19,8 @@ const EXPECTED_COMMANDS = [
 ];
 const REQUIRED_RUNTIME_ASSETS = [
   'lib/build/pdf.worker.js',
+  'lib/web/standard_fonts/FoxitSans.pfb',
+  'media/markdown/annotationModel.js',
   'media/markdown/dist/index.min.js',
   'node_modules/dommatrix/dist/dommatrix.js',
   'node_modules/pdfjs-dist/legacy/build/pdf.js',
@@ -26,6 +33,29 @@ const REQUIRED_RUNTIME_ASSETS = [
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForPdfWebview(
+  resource: vscode.Uri,
+  timeoutMilliseconds: number
+): Promise<PdfWebviewStatus> {
+  const deadline = Date.now() + timeoutMilliseconds;
+  let lastStatus: PdfWebviewStatus | undefined;
+  while (Date.now() < deadline) {
+    lastStatus = await vscode.commands.executeCommand<PdfWebviewStatus>(
+      'dipe-paper-reader._getPdfWebviewStatus',
+      resource
+    );
+    if (lastStatus?.state === 'ready' || lastStatus?.state === 'error') {
+      return lastStatus;
+    }
+    await delay(100);
+  }
+  throw new Error(
+    `Timed out waiting for the PDF Webview to load the document. Last status: ${JSON.stringify(
+      lastStatus
+    )}`
+  );
 }
 
 async function closeAllEditors(): Promise<void> {
@@ -83,13 +113,25 @@ suite('Paper Reader extension integration', () => {
       `Missing test PDF: ${pdfPath}`
     );
 
+    const pdfUri = vscode.Uri.file(pdfPath);
     await vscode.commands.executeCommand(
       'vscode.openWith',
-      vscode.Uri.file(pdfPath),
+      pdfUri,
       'dipe.paperReader',
       vscode.ViewColumn.Active
     );
-    await delay(1500);
+    const webviewStatus = await waitForPdfWebview(pdfUri, 15_000);
+    assert.notStrictEqual(
+      webviewStatus.state,
+      'error',
+      webviewStatus.state === 'error'
+        ? `PDF Webview failed to initialize:\n${webviewStatus.details}`
+        : undefined
+    );
+    assert.ok(
+      webviewStatus.state === 'ready' && webviewStatus.pagesCount > 0,
+      'PDF Webview did not load any pages.'
+    );
 
     const tabs = ((vscode.window as unknown) as {
       tabGroups?: { activeTabGroup?: { activeTab?: { label?: string } } };

@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { getAiConfig, getSelectionAiConfig } from './config';
 import { testAiConnection } from './deepSeekClient';
 import { getMinerUConfig, getMinerUEnvironment } from './paperTranslation';
+import { checkRemoteMinerU } from './minerURemoteClient';
 
 type CheckResult = {
   name: string;
@@ -91,6 +92,14 @@ async function checkAi(): Promise<CheckResult> {
 async function checkMinerU(): Promise<CheckResult> {
   const config = getMinerUConfig();
   try {
+    if (config.apiUrl.trim()) {
+      const health = await checkRemoteMinerU(config.apiUrl);
+      return {
+        name: 'MinerU',
+        ok: true,
+        detail: `Remote MinerU ${health.version} is healthy (protocol ${health.protocolVersion}, processing ${health.processingTasks}, queued ${health.queuedTasks}).`,
+      };
+    }
     let output = '';
     try {
       output = await runProcess(
@@ -117,8 +126,9 @@ async function checkMinerU(): Promise<CheckResult> {
       name: 'MinerU',
       ok: false,
       detail: formatError(error),
-      solution:
-        'Check Paper Reader MinerU executable. If MinerU is installed in conda, set it to the full mineru.exe path, for example D:\\anaconda\\envs\\paperreader\\Scripts\\mineru.exe.',
+      solution: config.apiUrl.trim()
+        ? 'Check the MinerU API URL, Tailscale connectivity, and the MinerU service on the remote GPU host.'
+        : 'Check Paper Reader MinerU executable. Set it to mineru or the full path of a local MinerU CLI.',
     };
   }
 }

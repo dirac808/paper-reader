@@ -991,6 +991,10 @@ export class NoteStore implements vscode.Disposable {
       [exportedPath, annotation.id]
     );
     this.persist();
+    this.emitAnnotationChange({
+      kind: 'markdown',
+      documentHash: input.documentHash,
+    });
     return { ...annotation, exportedPath };
   }
 
@@ -1008,5 +1012,6 @@ export class NoteStore implements vscode.Disposable {
       [documentHash, id]
     );
     this.persist();
+    this.emitAnnotationChange({ kind: 'markdown', documentHash });
   }
 }

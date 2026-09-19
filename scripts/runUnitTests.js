@@ -1,5 +1,6 @@
 const assert = require("assert");
 const fs = require("fs");
+const http = require("http");
 const Module = require("module");
 const os = require("os");
 const path = require("path");
@@ -167,6 +168,66 @@ async function testMinerUOriginalMarkdownCache() {
   fs.writeFileSync(pdfPath, "pdf v2");
   const stale = await testingHooks.readCachedMinerUMarkdown(resource);
   assert.strictEqual(stale, undefined);
+}
+
+async function testRemoteMinerUHealthAndUrlSafety() {
+  const { checkRemoteMinerU, testingHooks } = require(
+    "../out/src/minerURemoteClient"
+  );
+  assert.strictEqual(
+    testingHooks.normalizeApiUrl("http://127.0.0.1:8000").href,
+    "http://127.0.0.1:8000/"
+  );
+  assert.throws(
+    () => testingHooks.normalizeApiUrl("file:///tmp/mineru"),
+    /http/
+  );
+
+  const extractionRoot = path.resolve(os.tmpdir(), "paper-reader-zip-root");
+  assert.strictEqual(
+    testingHooks.safeArchiveTarget(extractionRoot, "paper/images/figure.png"),
+    path.join(extractionRoot, "paper", "images", "figure.png")
+  );
+  assert.throws(
+    () => testingHooks.safeArchiveTarget(extractionRoot, "../escape.txt"),
+    /Unsafe path/
+  );
+  assert.throws(
+    () => testingHooks.safeArchiveTarget(extractionRoot, "/escape.txt"),
+    /Unsafe path/
+  );
+
+  const server = http.createServer((request, response) => {
+    if (request.url !== "/health") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        status: "healthy",
+        version: "3.4.0",
+        protocol_version: 2,
+        queued_tasks: 1,
+        processing_tasks: 2,
+      })
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    const health = await checkRemoteMinerU(
+      `http://127.0.0.1:${address.port}`
+    );
+    assert.deepStrictEqual(health, {
+      version: "3.4.0",
+      protocolVersion: 2,
+      queuedTasks: 1,
+      processingTasks: 2,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function testMarkdownAnnotationStore() {
@@ -365,6 +426,7 @@ async function main() {
   await testMissingTranslationRecovery();
   await testMaximumTranslationConcurrency();
   await testMinerUOriginalMarkdownCache();
+  await testRemoteMinerUHealthAndUrlSafety();
   await testMarkdownAnnotationStore();
   testMinimalTextChanges();
   testBoundedProcessLog();

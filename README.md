@@ -22,7 +22,9 @@ Paper Reader 是一款面向科研论文阅读的 VS Code 插件。它基于 PDF
 
 ### 全文解析与翻译
 
-- MinerU CLI，例如：
+- 推荐使用远程 MinerU FastAPI v2。插件会直接上传 PDF、轮询任务并下载 Markdown 与图片，
+  客户端无需安装 Python、MinerU、CUDA 或模型。
+- 也可以在同一台电脑安装 MinerU CLI，例如：
 
 ```powershell
 D:\anaconda\envs\paperreader\Scripts\mineru.exe
@@ -30,6 +32,18 @@ D:\anaconda\envs\paperreader\Scripts\mineru.exe
 
 - 一个 OpenAI-compatible API，例如 DeepSeek、OpenAI-compatible 网关或其他兼容服务。
 - 如果使用 MinerU `hybrid-engine` / `vlm-engine`，需要安装对应 Python 环境、Torch GPU 版本和 VLM 模型。
+
+远程 GPU 主机示例：
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES = "0"
+$env:MINERU_MODEL_SOURCE = "local"
+$env:MINERU_API_MAX_CONCURRENT_REQUESTS = "1"
+mineru-api --host <TAILSCALE_IP> --port 18180 --enable-vlm-preload false
+```
+
+客户端只需将 `MinerU API URL` 配置为 `http://<TAILSCALE_IP>:18180`。不要把未提供认证的
+MinerU API 绑定到公网地址；应绑定 VPN 地址并用防火墙限制来源。
 
 当前已验证的本地高精度配置：
 
@@ -115,7 +129,8 @@ paper-reader-output/
 - `Full Translation Prompt`: 全文翻译提示词，默认使用 JSON 强约束格式，通常不需要修改。
 - `Selection API Key/Base URL/Model/Prompt`: 划词翻译专用配置。留空时继承全文翻译配置。
 - `Output Directory`: 输出目录，默认 `paper-reader-output`。
-- `MinerU Executable`: MinerU CLI 路径。
+- `MinerU API URL`: 远程 MinerU FastAPI v2 地址；配置后直接使用远程 GPU。
+- `MinerU Executable`: 本地 MinerU CLI 路径；远程 API 模式下忽略。
 - `MinerU Backend`: MinerU backend，例如 `pipeline`、`vlm-engine`、`hybrid-engine`。
 - `MinerU Hybrid Effort`: `medium` 或 `high`。
 - `MinerU Model Source`: `auto`、`huggingface`、`modelscope`、`local`。
@@ -126,7 +141,7 @@ paper-reader-output/
 
 配置界面中的 `Self Check` 会检查：
 
-- MinerU 是否可执行。
+- 已配置远程 API 时，检查 MinerU API 健康状态、版本和协议；否则检查本地 MinerU 是否可执行。
 - AI API 是否可用。
 - Codex 插件接口是否可用。
 

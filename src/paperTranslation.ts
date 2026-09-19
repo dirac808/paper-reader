@@ -9,6 +9,7 @@ import {
 } from './deepSeekClient';
 import { getConfiguredOutputRoot, getStoredSettingValue } from './config';
 import { openMarkdownWysiwyg } from './markdownWysiwygProvider';
+import { runRemoteMinerU } from './minerURemoteClient';
 
 type ExtractResult = {
   ok: boolean;
@@ -379,10 +380,6 @@ function runMinerU(
     if (config.lang) {
       args.push('-l', config.lang);
     }
-    if (config.apiUrl) {
-      args.push('--api-url', config.apiUrl);
-    }
-
     const child = spawn(config.executable, args, {
       windowsHide: true,
       env: getMinerUEnvironment(config),
@@ -452,7 +449,26 @@ async function extractMarkdownWithMinerU(
     path.join(os.tmpdir(), 'paper-reader-mineru-')
   );
   try {
-    await runMinerU(resource, outputDir, config, onProgress, cancellation);
+    if (config.apiUrl.trim()) {
+      await runRemoteMinerU(
+        resource.fsPath,
+        outputDir,
+        {
+          apiUrl: config.apiUrl,
+          backend: config.backend,
+          effort: config.effort,
+          method: config.method,
+          lang: config.lang,
+          formula: config.formula,
+          table: config.table,
+          imageAnalysis: config.imageAnalysis,
+        },
+        onProgress,
+        cancellation
+      );
+    } else {
+      await runMinerU(resource, outputDir, config, onProgress, cancellation);
+    }
 
     const pdfStem = path.basename(
       resource.fsPath,

@@ -16,6 +16,7 @@ import { NotesPanel } from './notesPanel';
 import { NoteStore } from './noteStore';
 import { translatePdfToMarkdownWindow } from './paperTranslation';
 import { PdfCustomProvider } from './pdfProvider';
+import { PdfPreview } from './pdfPreview';
 import { extendMarkdownItWithMath } from './markdownMath';
 import {
   MarkdownWysiwygProvider,
@@ -220,6 +221,12 @@ export function activate(
           retainContextWhenHidden: false,
         },
       }
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'dipe-paper-reader._getPdfWebviewStatus',
+      (resource: vscode.Uri) => PdfPreview.getWebviewStatus(resource)
     )
   );
   context.subscriptions.push(

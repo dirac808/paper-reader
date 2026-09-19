@@ -19,7 +19,10 @@ assert.ok(
   )
 );
 assert.ok(!notes.includes("viewportMargin: Infinity"));
-assert.ok(!pdfPreview.includes("'build', 'pdf.worker.js')}\"></script>"));
+assert.strictEqual(
+  (pdfPreview.match(/'build', 'pdf\.worker\.js'/g) || []).length,
+  2
+);
 assert.ok(pdfPreview.includes("worker-src blob:"));
 assert.ok(pdfMain.includes("PDFViewerApplicationOptions.set('workerSrc'"));
 assert.ok(
