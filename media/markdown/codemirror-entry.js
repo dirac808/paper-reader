@@ -477,8 +477,16 @@ const showMenu = (event) => {
     anchor: selectionAnchor(view),
   };
   menu.hidden = false;
-  menu.style.left = `${Math.min(event.clientX, window.innerWidth - 220)}px`;
-  menu.style.top = `${Math.min(event.clientY, window.innerHeight - 90)}px`;
+  const margin = 4;
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(
+    margin,
+    Math.min(event.clientX, window.innerWidth - bounds.width - margin),
+  )}px`;
+  menu.style.top = `${Math.max(
+    margin,
+    Math.min(event.clientY, window.innerHeight - bounds.height - margin),
+  )}px`;
 };
 
 const scheduleSave = () => {

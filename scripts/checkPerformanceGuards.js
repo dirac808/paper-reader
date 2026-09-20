@@ -51,5 +51,8 @@ assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
 assert.ok(markdownStyles.includes("font-size: 1.3em"));
+assert.ok(markdownStyles.includes("z-index: 2147483647"));
+assert.ok(!markdownHtml.includes('data-action="aiPolish"'));
+assert.ok(!markdownHtml.includes('data-action="exportPdf"'));
 
 console.log("Performance guard checks passed.");

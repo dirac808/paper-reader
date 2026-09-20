@@ -19,15 +19,16 @@ html {
 
 .vditor-context-menu {
     position: fixed;
-    z-index: 10000;
+    z-index: 2147483647;
+    isolation: isolate;
     min-width: 200px;
     max-width: min(320px, calc(100vw - 8px));
     padding: 4px 0;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--vscode-menu-border, var(--vscode-editorWidget-border, transparent));
     border-radius: 5px;
-    background-color: var(--second-bg-color);
-    color: var(--front-color);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    background: var(--vscode-menu-background, var(--vscode-editorWidget-background, #252526));
+    color: var(--vscode-menu-foreground, var(--vscode-editorWidget-foreground, #f0f0f0));
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
     font-size: var(--vscode-font-size, 13px);
     line-height: 22px;
     font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
@@ -82,8 +83,8 @@ html {
 
 .vditor-context-menu__item:hover,
 .vditor-context-menu__item:focus-visible {
-    background-color: var(--dropdown-hover-background);
-    color: var(--front-color);
+    background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground));
+    color: var(--vscode-menu-selectionForeground, var(--vscode-menu-foreground, #fff));
     outline: none;
 }
 
@@ -615,20 +616,24 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-note-anchor {
+    position: relative;
+    z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
-    margin-left: 5px;
+    width: 14px;
+    height: 14px;
+    box-sizing: border-box;
+    margin-left: 2px;
     padding: 0;
     border: 1px solid var(--vscode-charts-yellow, #cca700);
     border-radius: 50%;
     color: var(--vscode-charts-yellow, #cca700);
     background: var(--vscode-editor-background);
-    font-size: 10px;
+    font-size: 9px;
     cursor: pointer;
-    vertical-align: middle;
+    vertical-align: baseline;
+    transform: translateY(-0.55em);
 }
 
 .paper-reader-cm-note-anchor:hover {
@@ -636,19 +641,20 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-note-anchor .codicon {
-    font-size: 12px;
+    font-size: 10px;
+    line-height: 1;
 }
 
 .paper-reader-cm-note-count {
     position: absolute;
-    top: -7px;
-    right: -8px;
-    min-width: 13px;
-    height: 13px;
-    padding: 0 2px;
-    border-radius: 7px;
+    top: -6px;
+    right: -7px;
+    min-width: 10px;
+    height: 10px;
+    padding: 0 1px;
+    border-radius: 5px;
     color: var(--vscode-badge-foreground, #fff);
     background: var(--vscode-badge-background, #4d4d4d);
-    font: 9px/13px var(--vscode-font-family, sans-serif);
+    font: 8px/10px var(--vscode-font-family, sans-serif);
     text-align: center;
 }
