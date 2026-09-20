@@ -48,5 +48,6 @@ assert.ok(markdownEditor.includes("provide: (field) => EditorView.decorations.fr
 assert.ok(markdownHtml.includes('data-command="search"'));
 assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
+assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
 
 console.log("Performance guard checks passed.");

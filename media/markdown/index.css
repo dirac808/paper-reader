@@ -510,7 +510,6 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-math,
 .paper-reader-cm-image {
     display: block;
-    width: fit-content;
     max-width: min(100%, 1100px);
     margin: 12px auto;
     padding: 10px 16px;
@@ -520,6 +519,15 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     background: transparent;
     cursor: text;
     text-align: center;
+}
+
+.paper-reader-cm-math {
+    width: min(100%, 1100px);
+    box-sizing: border-box;
+}
+
+.paper-reader-cm-image {
+    width: fit-content;
 }
 
 .paper-reader-cm-inline-math,
@@ -580,6 +588,12 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-math .katex-display {
     margin: 0;
     overflow: auto hidden;
+}
+
+.paper-reader-cm-math--tagged .katex-display > .katex > .katex-html {
+    min-width: max-content;
+    padding-inline: 3.5em;
+    box-sizing: border-box;
 }
 
 .paper-reader-cm-image img {

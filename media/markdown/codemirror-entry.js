@@ -134,6 +134,9 @@ class MathWidget extends WidgetType {
     node.className = this.displayMode
       ? 'paper-reader-cm-math'
       : 'paper-reader-cm-inline-math';
+    if (this.displayMode && /\\tag\*?\s*\{/.test(this.source)) {
+      node.classList.add('paper-reader-cm-math--tagged');
+    }
     node.title = 'Click to edit Markdown formula';
     node.setAttribute('aria-label', 'Edit formula source');
     try {
