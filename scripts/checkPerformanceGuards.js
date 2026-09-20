@@ -11,6 +11,7 @@ const pdfPreview = read("src/pdfPreview.ts");
 const markdown = read("media/markdown/index.js");
 const markdownHtml = read("media/markdown/index.html");
 const markdownEditor = read("media/markdown/codemirror-entry.js");
+const markdownStyles = read("media/markdown/index.css");
 const markdownProvider = read("src/markdownWysiwygProvider.ts");
 const notes = read("src/notesPanel.ts");
 
@@ -49,5 +50,6 @@ assert.ok(markdownHtml.includes('data-command="search"'));
 assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
+assert.ok(markdownStyles.includes("font-size: 1.3em"));
 
 console.log("Performance guard checks passed.");

@@ -524,6 +524,8 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-math {
     width: min(100%, 1100px);
     box-sizing: border-box;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: var(--vscode-editor-font-size, 14px);
 }
 
 .paper-reader-cm-image {
@@ -588,6 +590,10 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-math .katex-display {
     margin: 0;
     overflow: auto hidden;
+}
+
+.paper-reader-cm-math .katex-display > .katex {
+    font-size: 1.3em;
 }
 
 .paper-reader-cm-math--tagged .katex-display > .katex > .katex-html {
