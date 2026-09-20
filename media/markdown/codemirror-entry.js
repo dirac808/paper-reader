@@ -368,15 +368,19 @@ const buildVisibleDecorations = (view) => {
       lineNumber += 1) {
       const line = view.state.doc.line(lineNumber);
       const heading = /^(#{1,6})\s+/.exec(line.text);
-      if (!heading || intersectsSelection(view, line.from, line.to)) continue;
+      if (!heading) continue;
+      // Keep heading geometry stable while the pointer changes the selection.
+      // Removing this line decoration mid-drag moves the title under the cursor.
       decorations.push(
         Decoration.line({ class: `paper-reader-cm-heading-${heading[1].length}` }).range(
           line.from,
         ),
       );
-      decorations.push(
-        Decoration.replace({}).range(line.from, line.from + heading[0].length),
-      );
+      if (!intersectsSelection(view, line.from, line.to)) {
+        decorations.push(
+          Decoration.replace({}).range(line.from, line.from + heading[0].length),
+        );
+      }
     }
   }
 

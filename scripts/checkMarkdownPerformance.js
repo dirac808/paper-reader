@@ -24,6 +24,13 @@ assert.ok(editor.includes('window.paperReaderMarkdownPerformance'));
 assert.ok(editor.includes('inlineMathPattern'));
 assert.ok(editor.includes('superscriptPattern'));
 assert.ok(editor.includes('paper-reader-cm-heading-'));
+assert.ok(editor.includes('Keep heading geometry stable'));
+assert.ok(
+  /if \(!heading\) continue;[\s\S]{0,500}Decoration\.line[\s\S]{0,500}if \(!intersectsSelection\(view, line\.from, line\.to\)\)/.test(
+    editor,
+  ),
+  'Heading line styling must remain active while selecting its text',
+);
 assert.ok(editor.includes('codicon-note'));
 assert.ok(editor.includes('updateMarkdownFontSizes'));
 assert.ok(editor.includes('documentBlockPreview'));

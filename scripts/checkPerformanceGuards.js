@@ -50,6 +50,12 @@ assert.ok(markdownHtml.includes('data-command="search"'));
 assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
+assert.ok(markdownEditor.includes("Keep heading geometry stable"));
+assert.ok(
+  /if \(!heading\) continue;[\s\S]{0,500}Decoration\.line[\s\S]{0,500}if \(!intersectsSelection\(view, line\.from, line\.to\)\)/.test(
+    markdownEditor
+  )
+);
 assert.ok(markdownStyles.includes("--paper-reader-display-math-font-size"));
 assert.ok(markdownHtml.includes('data-command="font-sizes"'));
 assert.ok(markdownEditor.includes("updateMarkdownFontSizes"));
