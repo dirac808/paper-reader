@@ -2,7 +2,7 @@
   "name": "paper-reader",
   "displayName": "Paper Reader",
   "description": "A VS Code research paper reader with PDF viewing, Codex context actions, MinerU extraction, and AI translation.",
-  "version": "1.4.10",
+  "version": "1.4.11",
   "publisher": "paper-reader-lab",
   "repository": {
     "type": "git",

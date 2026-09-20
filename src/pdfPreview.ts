@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { sendPdfSelectionToCodex } from './codexBridge';
 import { translateAcademicSelection } from './deepSeekClient';
 import { Disposable } from './disposable';
+import { openMarkdownNote } from './markdownWysiwygProvider';
 import { NoteStore } from './noteStore';
 
 function escapeAttribute(value: string | vscode.Uri): string {
@@ -161,7 +162,7 @@ export class PdfPreview extends Disposable {
                 selectedText: String(message.selectedText || ''),
                 content: '## Note\n\n',
               });
-              await this.openPdfAnnotationMarkdown(annotation.exportedPath);
+              await openMarkdownNote(annotation.exportedPath);
               await this.sendPdfAnnotations();
             } catch (error) {
               vscode.window.showErrorMessage(
@@ -184,7 +185,7 @@ export class PdfPreview extends Disposable {
                 await this.sendPdfAnnotations();
                 return;
               }
-              await this.openPdfAnnotationMarkdown(annotation.exportedPath);
+              await openMarkdownNote(annotation.exportedPath);
             } catch (error) {
               vscode.window.showErrorMessage(
                 error instanceof Error
@@ -315,33 +316,6 @@ export class PdfPreview extends Disposable {
         path.basename(this.resource.fsPath)
       ),
     });
-  }
-
-  private async openPdfAnnotationMarkdown(
-    exportedPath: string | undefined
-  ): Promise<void> {
-    if (!exportedPath) {
-      throw new Error('PDF note Markdown file was not created.');
-    }
-
-    const document = await vscode.workspace.openTextDocument(
-      vscode.Uri.file(exportedPath)
-    );
-    await vscode.window.showTextDocument(document, {
-      preview: false,
-      preserveFocus: false,
-      viewColumn: vscode.ViewColumn.Beside,
-    });
-
-    try {
-      await vscode.commands.executeCommand(
-        'workbench.action.moveEditorToNewWindow'
-      );
-    } catch {
-      vscode.window.showInformationMessage(
-        'PDF note opened in a Markdown editor.'
-      );
-    }
   }
 
   public get resourceUri(): vscode.Uri {

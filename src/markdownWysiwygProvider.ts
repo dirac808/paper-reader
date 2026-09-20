@@ -198,21 +198,19 @@ function getDocumentTitle(document: vscode.TextDocument): string {
   return path.basename(document.uri.fsPath || document.uri.path);
 }
 
-async function openAnnotationMarkdown(
+export async function openMarkdownNote(
   exportedPath: string | undefined
 ): Promise<void> {
   if (!exportedPath) {
     throw new Error('Markdown note file was not created.');
   }
 
-  const noteDocument = await vscode.workspace.openTextDocument(
-    vscode.Uri.file(exportedPath)
+  await vscode.commands.executeCommand(
+    'vscode.openWith',
+    vscode.Uri.file(exportedPath),
+    MARKDOWN_VIEW_TYPE,
+    vscode.ViewColumn.Beside
   );
-  await vscode.window.showTextDocument(noteDocument, {
-    preview: false,
-    preserveFocus: false,
-    viewColumn: vscode.ViewColumn.Beside,
-  });
 
   try {
     await vscode.commands.executeCommand(
@@ -220,7 +218,7 @@ async function openAnnotationMarkdown(
     );
   } catch {
     vscode.window.showInformationMessage(
-      'Markdown note opened in a Markdown editor.'
+      'Paper Reader note opened in the current window.'
     );
   }
 }
@@ -441,7 +439,7 @@ export class MarkdownWysiwygProvider
                 content: '## Note\n\n',
               });
               await sendMarkdownAnnotations();
-              await openAnnotationMarkdown(annotation.exportedPath);
+              await openMarkdownNote(annotation.exportedPath);
               vscode.window.showInformationMessage('Markdown note created.');
             }
             break;
@@ -484,7 +482,7 @@ export class MarkdownWysiwygProvider
                 await sendMarkdownAnnotations();
                 break;
               }
-              await openAnnotationMarkdown(annotation.exportedPath);
+              await openMarkdownNote(annotation.exportedPath);
             }
             break;
           case 'deleteMarkdownAnnotation':

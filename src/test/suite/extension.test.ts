@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { openMarkdownNote } from '../../markdownWysiwygProvider';
 
 type PdfWebviewStatus =
   | { state: 'loading'; stage: string }
@@ -182,6 +183,52 @@ suite('Paper Reader extension integration', () => {
       );
       const document = await vscode.workspace.openTextDocument(markdownPath);
       assert.ok(document.getText().includes('x^2 + y^2 = z^2'));
+    } finally {
+      await closeAllEditors();
+      await removeDirectory(directory);
+    }
+  });
+
+  test('opens note Markdown with the Paper Reader custom editor', async function () {
+    this.timeout(20_000);
+    const directory = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), 'paper-reader-note-integration-')
+    );
+    const notePath = path.join(directory, 'note.md');
+    const noteUri = vscode.Uri.file(notePath);
+    await fs.promises.writeFile(
+      notePath,
+      '## Note\n\nIntegration note.\n',
+      'utf8'
+    );
+
+    try {
+      await openMarkdownNote(notePath);
+      await delay(1000);
+
+      const tabGroups = ((vscode.window as unknown) as {
+        tabGroups: {
+          all: Array<{ tabs: Array<{ input: unknown }> }>;
+        };
+      }).tabGroups;
+      let noteTab: { input: unknown } | undefined;
+      for (const group of tabGroups.all) {
+        noteTab = group.tabs.find((tab) => {
+          const input = tab.input as {
+            uri?: vscode.Uri;
+            viewType?: string;
+          };
+          return input.uri?.toString() === noteUri.toString();
+        });
+        if (noteTab) {
+          break;
+        }
+      }
+      assert.ok(noteTab, 'Paper Reader note tab did not open.');
+      assert.strictEqual(
+        (noteTab.input as { viewType?: string }).viewType,
+        'paper-reader.markdownEditor'
+      );
     } finally {
       await closeAllEditors();
       await removeDirectory(directory);

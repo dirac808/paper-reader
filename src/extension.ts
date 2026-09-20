@@ -20,6 +20,7 @@ import { PdfPreview } from './pdfPreview';
 import { extendMarkdownItWithMath } from './markdownMath';
 import {
   MarkdownWysiwygProvider,
+  openMarkdownNote,
   openMarkdownWysiwyg,
 } from './markdownWysiwygProvider';
 import { normalizeMarkdownMathDelimiters } from './markdownCleanup';
@@ -62,22 +63,6 @@ function isCancellationError(error: unknown): boolean {
     error instanceof Error &&
     /operation was cancelled|canceled/i.test(error.message)
   );
-}
-
-async function openAnnotationMarkdown(
-  exportedPath: string | undefined
-): Promise<void> {
-  if (!exportedPath) {
-    throw new Error('Markdown note file was not created.');
-  }
-  const document = await vscode.workspace.openTextDocument(
-    vscode.Uri.file(exportedPath)
-  );
-  await vscode.window.showTextDocument(document, {
-    preview: false,
-    preserveFocus: false,
-    viewColumn: vscode.ViewColumn.Beside,
-  });
 }
 
 async function normalizeMarkdownMathFile(resource?: vscode.Uri): Promise<void> {
@@ -410,7 +395,7 @@ export function activate(
             suffixText: context.suffixText,
             content: '## Note\n\n',
           });
-          await openAnnotationMarkdown(annotation.exportedPath);
+          await openMarkdownNote(annotation.exportedPath);
           vscode.window.showInformationMessage('Markdown note created.');
         } catch (error) {
           vscode.window.showErrorMessage(
