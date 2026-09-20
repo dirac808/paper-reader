@@ -2,7 +2,7 @@
   "name": "paper-reader",
   "displayName": "Paper Reader",
   "description": "A VS Code research paper reader with PDF viewing, Codex context actions, MinerU extraction, and AI translation.",
-  "version": "1.4.9",
+  "version": "1.4.10",
   "publisher": "paper-reader-lab",
   "repository": {
     "type": "git",
@@ -352,6 +352,27 @@
             "Monokai",
             "Nord"
           ]
+        },
+        "paper-reader.markdown.bodyFontSize": {
+          "markdownDescription": "Body text size in the Paper Reader Markdown editor.",
+          "type": "number",
+          "default": 14,
+          "minimum": 10,
+          "maximum": 32
+        },
+        "paper-reader.markdown.inlineMathFontSize": {
+          "markdownDescription": "Inline formula size in the Paper Reader Markdown editor.",
+          "type": "number",
+          "default": 15,
+          "minimum": 10,
+          "maximum": 32
+        },
+        "paper-reader.markdown.displayMathFontSize": {
+          "markdownDescription": "Display formula size in the Paper Reader Markdown editor.",
+          "type": "number",
+          "default": 18,
+          "minimum": 10,
+          "maximum": 32
         },
         "paper-reader.mineru.executable": {
           "markdownDescription": "Local MinerU CLI executable path. Ignored when `MinerU API URL` is configured.",

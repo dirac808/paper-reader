@@ -245,7 +245,7 @@ class NoteAnchorWidget extends WidgetType {
     node.title = count === 1 ? 'Open note' : `Open ${count} notes`;
     node.setAttribute('aria-label', node.title);
     const icon = document.createElement('span');
-    icon.className = 'codicon codicon-notebook';
+    icon.className = 'codicon codicon-note';
     icon.setAttribute('aria-hidden', 'true');
     node.appendChild(icon);
     if (count > 1) {
@@ -456,11 +456,65 @@ const root = document.getElementById('paper-reader-editor');
 const toolbar = document.getElementById('paper-reader-toolbar');
 const outline = document.getElementById('paper-reader-outline');
 const menu = document.getElementById('paper-reader-context-menu');
+const fontPanel = document.getElementById('paper-reader-font-panel');
+const defaultFontSizes = { body: 14, inlineMath: 15, displayMath: 18 };
 let view;
 let pendingSelection = null;
 let saveTimer = 0;
 let outlineTimer = 0;
+let fontSaveTimer = 0;
+let fontSizes = { ...defaultFontSizes };
 let opened = false;
+
+const normalizeFontSizes = (value = {}) => {
+  const normalize = (candidate, fallback) => {
+    const number = Number(candidate);
+    return Number.isFinite(number)
+      ? Math.min(32, Math.max(10, Math.round(number)))
+      : fallback;
+  };
+  return {
+    body: normalize(value.body, defaultFontSizes.body),
+    inlineMath: normalize(value.inlineMath, defaultFontSizes.inlineMath),
+    displayMath: normalize(value.displayMath, defaultFontSizes.displayMath),
+  };
+};
+
+const applyFontSizes = (value) => {
+  fontSizes = normalizeFontSizes(value);
+  document.documentElement.style.setProperty(
+    '--paper-reader-body-font-size',
+    `${fontSizes.body}px`,
+  );
+  document.documentElement.style.setProperty(
+    '--paper-reader-inline-math-font-size',
+    `${fontSizes.inlineMath}px`,
+  );
+  document.documentElement.style.setProperty(
+    '--paper-reader-display-math-font-size',
+    `${fontSizes.displayMath}px`,
+  );
+  fontPanel?.querySelectorAll('input[data-font-size]').forEach((input) => {
+    input.value = String(fontSizes[input.dataset.fontSize]);
+  });
+  view?.requestMeasure();
+};
+
+const saveFontSizes = (immediate = false) => {
+  window.clearTimeout(fontSaveTimer);
+  const save = () => handler.emit('updateMarkdownFontSizes', fontSizes);
+  if (immediate) save();
+  else fontSaveTimer = window.setTimeout(save, 250);
+};
+
+const setFontPanelVisibility = (visible) => {
+  if (!fontPanel) return;
+  fontPanel.hidden = !visible;
+  toolbar?.querySelector('[data-command="font-sizes"]')?.setAttribute(
+    'aria-expanded',
+    String(visible),
+  );
+};
 
 const hideMenu = () => {
   if (menu) menu.hidden = true;
@@ -632,6 +686,9 @@ const runToolbarCommand = (command) => {
       break;
     case 'math': insertBlock('$$\nformula\n$$', 3, 7); break;
     case 'image': replaceSelection('![', '](assets/image.png)', 'alt'); break;
+    case 'font-sizes':
+      setFontPanelVisibility(fontPanel?.hidden ?? true);
+      break;
     case 'save': saveNow(); break;
     default: break;
   }
@@ -644,7 +701,30 @@ toolbar?.addEventListener('click', (event) => {
   if (button) runToolbarCommand(button.dataset.command);
 });
 
+fontPanel?.addEventListener('input', (event) => {
+  const input = event.target instanceof HTMLInputElement
+    ? event.target.closest('input[data-font-size]')
+    : null;
+  if (!input || !input.value) return;
+  const key = input.dataset.fontSize;
+  applyFontSizes({ ...fontSizes, [key]: Number(input.value) });
+  saveFontSizes();
+});
+
+fontPanel?.addEventListener('click', (event) => {
+  const button = event.target instanceof Element
+    ? event.target.closest('button[data-font-action]')
+    : null;
+  if (button?.dataset.fontAction === 'close') {
+    setFontPanelVisibility(false);
+  } else if (button?.dataset.fontAction === 'reset') {
+    applyFontSizes(defaultFontSizes);
+    saveFontSizes(true);
+  }
+});
+
 const createView = (payload) => {
+  applyFontSizes(payload.config?.fontSizes);
   const extensions = [
     history(),
     search({ top: true }),
@@ -678,6 +758,14 @@ const createView = (payload) => {
   view.dom.addEventListener('contextmenu', showMenu);
   document.addEventListener('click', (event) => {
     if (!menu?.contains(event.target)) hideMenu();
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      !fontPanel?.hidden &&
+      !fontPanel?.contains(target) &&
+      !target?.closest('[data-command="font-sizes"]')
+    ) {
+      setFontPanelVisibility(false);
+    }
   });
   opened = true;
 };
@@ -719,6 +807,7 @@ handler.on('markdownAnnotations', (annotations) => {
   });
   view.dispatch({ effects: noteUpdate.of(mapped) });
 });
+handler.on('markdownFontSizes', applyFontSizes);
 handler.on('gotoBlock', (fragment) => {
   if (!view || !fragment) return;
   const index = view.state.doc.toString().indexOf(fragment);

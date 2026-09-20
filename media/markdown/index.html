@@ -35,8 +35,19 @@
             <button type="button" data-command="table" title="Table" aria-label="Table"><span class="codicon codicon-table"></span></button>
             <button type="button" data-command="math" title="Display formula" aria-label="Display formula"><span class="codicon codicon-symbol-numeric"></span></button>
             <button type="button" data-command="image" title="Image" aria-label="Image"><span class="codicon codicon-file-media"></span></button>
+            <button type="button" data-command="font-sizes" title="Font sizes" aria-label="Font sizes" aria-expanded="false"><span class="codicon codicon-text-size"></span></button>
             <span class="paper-reader-toolbar-spacer"></span>
             <button type="button" data-command="save" title="Save" aria-label="Save"><span class="codicon codicon-save"></span></button>
+        </div>
+        <div id="paper-reader-font-panel" role="dialog" aria-label="Markdown font sizes" hidden>
+            <div class="paper-reader-font-panel-header">
+                <strong>Font sizes</strong>
+                <button type="button" data-font-action="close" title="Close" aria-label="Close font size settings"><span class="codicon codicon-close"></span></button>
+            </div>
+            <label>Body <span><input type="number" data-font-size="body" min="10" max="32" step="1" inputmode="numeric" /> px</span></label>
+            <label>Inline math <span><input type="number" data-font-size="inlineMath" min="10" max="32" step="1" inputmode="numeric" /> px</span></label>
+            <label>Display math <span><input type="number" data-font-size="displayMath" min="10" max="32" step="1" inputmode="numeric" /> px</span></label>
+            <button type="button" class="paper-reader-font-reset" data-font-action="reset">Reset defaults</button>
         </div>
         <div id="paper-reader-workspace">
             <aside id="paper-reader-outline" aria-label="Document outline" hidden></aside>

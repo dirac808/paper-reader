@@ -340,11 +340,102 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 /* CodeMirror 6 live preview surface. The document remains a normal CM document;
    only visible formula and image ranges are replaced with widgets. */
 #paper-reader-shell {
+    position: relative;
     display: grid;
     grid-template-rows: 36px minmax(0, 1fr);
     height: 100%;
     color: var(--vscode-editor-foreground);
     background: var(--vscode-editor-background);
+}
+
+#paper-reader-font-panel {
+    position: absolute;
+    top: 34px;
+    right: 38px;
+    z-index: 1000;
+    display: grid;
+    gap: 9px;
+    width: 230px;
+    box-sizing: border-box;
+    padding: 10px;
+    border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    border-radius: 4px;
+    color: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+    font: 13px/20px var(--vscode-font-family, sans-serif);
+}
+
+#paper-reader-font-panel[hidden] {
+    display: none;
+}
+
+.paper-reader-font-panel-header,
+#paper-reader-font-panel label,
+#paper-reader-font-panel label > span {
+    display: flex;
+    align-items: center;
+}
+
+.paper-reader-font-panel-header,
+#paper-reader-font-panel label {
+    justify-content: space-between;
+}
+
+.paper-reader-font-panel-header button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 3px;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+}
+
+.paper-reader-font-panel-header button:hover,
+.paper-reader-font-panel-header button:focus-visible {
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
+    outline: none;
+}
+
+#paper-reader-font-panel label > span {
+    gap: 5px;
+    color: var(--vscode-descriptionForeground, currentColor);
+}
+
+#paper-reader-font-panel input {
+    width: 58px;
+    height: 24px;
+    box-sizing: border-box;
+    padding: 2px 4px;
+    border: 1px solid var(--vscode-input-border, transparent);
+    border-radius: 2px;
+    color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-input-background, var(--vscode-editor-background));
+    font: inherit;
+}
+
+#paper-reader-font-panel input:focus {
+    border-color: var(--vscode-focusBorder);
+    outline: none;
+}
+
+#paper-reader-font-panel .paper-reader-font-reset {
+    min-height: 26px;
+    border: 1px solid var(--vscode-button-border, transparent);
+    border-radius: 2px;
+    color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+    background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+    font: inherit;
+    cursor: pointer;
+}
+
+#paper-reader-font-panel .paper-reader-font-reset:hover {
+    background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
 }
 
 #paper-reader-toolbar {
@@ -456,7 +547,7 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 
 #paper-reader-editor .cm-content {
     caret-color: var(--vscode-editorCursor-foreground, currentColor);
-    font-size: var(--vscode-editor-font-size, 14px);
+    font-size: var(--paper-reader-body-font-size, 14px);
     line-height: 1.6;
 }
 
@@ -526,7 +617,7 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     width: min(100%, 1100px);
     box-sizing: border-box;
     font-family: var(--vscode-editor-font-family, monospace);
-    font-size: var(--vscode-editor-font-size, 14px);
+    font-size: var(--paper-reader-body-font-size, 14px);
 }
 
 .paper-reader-cm-image {
@@ -553,7 +644,7 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-inline-math .katex {
-    font-size: 1.05em;
+    font-size: var(--paper-reader-inline-math-font-size, 15px);
 }
 
 .paper-reader-cm-heading-1,
@@ -594,7 +685,7 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-math .katex-display > .katex {
-    font-size: 1.3em;
+    font-size: var(--paper-reader-display-math-font-size, 18px);
 }
 
 .paper-reader-cm-math--tagged .katex-display > .katex > .katex-html {
@@ -626,10 +717,10 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     box-sizing: border-box;
     margin-left: 2px;
     padding: 0;
-    border: 1px solid var(--vscode-charts-yellow, #cca700);
-    border-radius: 50%;
+    border: 0;
+    border-radius: 2px;
     color: var(--vscode-charts-yellow, #cca700);
-    background: var(--vscode-editor-background);
+    background: transparent;
     font-size: 9px;
     cursor: pointer;
     vertical-align: baseline;
@@ -637,11 +728,12 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-note-anchor:hover {
-    background: var(--vscode-editor-selectionBackground);
+    color: var(--vscode-editorWarning-foreground, #cca700);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
 }
 
 .paper-reader-cm-note-anchor .codicon {
-    font-size: 10px;
+    font-size: 12px;
     line-height: 1;
 }
 

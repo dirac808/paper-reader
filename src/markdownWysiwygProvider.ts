@@ -30,6 +30,11 @@ type MarkdownOpenPayload = {
     language: string;
     isWeb: boolean;
     isDev: boolean;
+    fontSizes: {
+      body: number;
+      inlineMath: number;
+      displayMath: number;
+    };
     markdown: {
       math: {
         macros: Record<string, string>;
@@ -82,8 +87,10 @@ function readMarkdownHtml(
   return rewriteResourcePaths(html, webview, resourceRoot);
 }
 
-function getMarkdownConfig(): MarkdownOpenPayload['config'] {
-  const config = vscode.workspace.getConfiguration();
+function getMarkdownConfig(
+  resource?: vscode.Uri
+): MarkdownOpenPayload['config'] {
+  const config = vscode.workspace.getConfiguration(undefined, resource);
   const get = <T>(key: string, defaultValue: T): T => {
     const value = config.get<T>(`paper-reader.markdown.${key}`);
     return value === undefined ? defaultValue : value;
@@ -97,6 +104,11 @@ function getMarkdownConfig(): MarkdownOpenPayload['config'] {
     language: vscode.env.language,
     isWeb: false,
     isDev: false,
+    fontSizes: {
+      body: get<number>('bodyFontSize', 14),
+      inlineMath: get<number>('inlineMathFontSize', 15),
+      displayMath: get<number>('displayMathFontSize', 18),
+    },
     markdown: {
       math: {
         macros: markdownConfig.get<Record<string, string>>('math.macros', {}),
@@ -279,7 +291,7 @@ export class MarkdownWysiwygProvider
         .asWebviewUri(getMarkdownResourceRoot(this.context))
         .toString(),
       documentCacheId: `${document.uri.scheme}:${document.uri.toString()}`,
-      config: getMarkdownConfig(),
+      config: getMarkdownConfig(document.uri),
     });
 
     const sendMarkdownAnnotations = async (): Promise<void> => {
@@ -339,6 +351,50 @@ export class MarkdownWysiwygProvider
               await vscode.commands.executeCommand(
                 'workbench.action.files.save'
               );
+            }
+            break;
+          case 'updateMarkdownFontSizes':
+            if (message.content && typeof message.content === 'object') {
+              const requested = message.content as Record<string, unknown>;
+              const clamp = (value: unknown, fallback: number): number => {
+                const numeric = Number(value);
+                return Number.isFinite(numeric)
+                  ? Math.min(32, Math.max(10, Math.round(numeric)))
+                  : fallback;
+              };
+              const fontSizes = {
+                body: clamp(requested.body, 14),
+                inlineMath: clamp(requested.inlineMath, 15),
+                displayMath: clamp(requested.displayMath, 18),
+              };
+              const configuration = vscode.workspace.getConfiguration(
+                'paper-reader',
+                document.uri
+              );
+              const workspaceFolder = vscode.workspace.getWorkspaceFolder(
+                document.uri
+              );
+              const target = workspaceFolder
+                ? vscode.ConfigurationTarget.WorkspaceFolder
+                : vscode.workspace.workspaceFolders?.length
+                ? vscode.ConfigurationTarget.Workspace
+                : vscode.ConfigurationTarget.Global;
+              await configuration.update(
+                'markdown.bodyFontSize',
+                fontSizes.body,
+                target
+              );
+              await configuration.update(
+                'markdown.inlineMathFontSize',
+                fontSizes.inlineMath,
+                target
+              );
+              await configuration.update(
+                'markdown.displayMathFontSize',
+                fontSizes.displayMath,
+                target
+              );
+              emit('markdownFontSizes', fontSizes);
             }
             break;
           case 'openLink':
