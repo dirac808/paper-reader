@@ -659,17 +659,17 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-heading-1 {
-    margin-top: 20px !important;
+    padding-top: 20px !important;
     font-size: 1.8em;
 }
 
 .paper-reader-cm-heading-2 {
-    margin-top: 16px !important;
+    padding-top: 16px !important;
     font-size: 1.45em;
 }
 
 .paper-reader-cm-heading-3 {
-    margin-top: 12px !important;
+    padding-top: 12px !important;
     font-size: 1.2em;
 }
 

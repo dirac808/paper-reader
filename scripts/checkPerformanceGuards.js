@@ -40,22 +40,30 @@ assert.ok(!markdownHtml.includes("dist/index.min.js"));
 assert.ok(markdownEditor.includes("view.visibleRanges"));
 assert.ok(markdownEditor.includes("EditorState"));
 assert.ok(markdownEditor.includes("Decoration.replace"));
-assert.ok(!markdownEditor.includes("doc.toString()") || markdownEditor.includes("selectionAnchor"));
+assert.ok(
+  !markdownEditor.includes("doc.toString()") ||
+    markdownEditor.includes("selectionAnchor")
+);
 assert.ok(markdownEditor.includes("documentBlockPreview"));
 assert.ok(markdownEditor.includes("collectDocumentBlocks"));
-assert.ok(!/documentBlockPreview[\s\S]{0,900}viewportChanged/.test(markdownEditor));
-assert.ok(markdownEditor.includes("const documentBlockPreview = StateField.define"));
-assert.ok(markdownEditor.includes("provide: (field) => EditorView.decorations.from"));
+assert.ok(
+  !/documentBlockPreview[\s\S]{0,900}viewportChanged/.test(markdownEditor)
+);
+assert.ok(
+  markdownEditor.includes("const documentBlockPreview = StateField.define")
+);
+assert.ok(
+  markdownEditor.includes("provide: (field) => EditorView.decorations.from")
+);
 assert.ok(markdownHtml.includes('data-command="search"'));
 assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
-assert.ok(markdownEditor.includes("Keep heading geometry stable"));
-assert.ok(
-  /if \(!heading\) continue;[\s\S]{0,500}Decoration\.line[\s\S]{0,500}if \(!intersectsSelection\(view, line\.from, line\.to\)\)/.test(
-    markdownEditor
-  )
-);
+assert.ok(markdownEditor.includes("pointer selection never moves the title"));
+assert.ok(!markdownEditor.includes("pointerSelectingHeading"));
+assert.ok(!markdownEditor.includes("if (!heading || intersectsSelection"));
+assert.ok(markdownStyles.includes("padding-top: 20px !important"));
+assert.ok(!markdownStyles.includes("margin-top: 20px !important"));
 assert.ok(markdownStyles.includes("--paper-reader-display-math-font-size"));
 assert.ok(markdownHtml.includes('data-command="font-sizes"'));
 assert.ok(markdownEditor.includes("updateMarkdownFontSizes"));

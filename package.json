@@ -2,7 +2,7 @@
   "name": "paper-reader",
   "displayName": "Paper Reader",
   "description": "A VS Code research paper reader with PDF viewing, Codex context actions, MinerU extraction, and AI translation.",
-  "version": "1.4.12",
+  "version": "1.4.13",
   "publisher": "paper-reader-lab",
   "repository": {
     "type": "git",
@@ -510,6 +510,7 @@
     "test:unit": "npm run compile && node scripts/runUnitTests.js",
     "test:performance": "npm run compile && node scripts/checkPerformanceGuards.js",
     "test:markdown-performance": "npm run build:markdown && node scripts/checkMarkdownPerformance.js",
+    "test:markdown-selection": "npm run build:markdown && node scripts/checkMarkdownHeadingSelection.js",
     "build:markdown": "node scripts/buildMarkdownEditor.js",
     "lint": "eslint -c .eslintrc.json --ext .ts ./src",
     "package": "vsce package"
