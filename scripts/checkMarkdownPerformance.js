@@ -27,6 +27,8 @@ assert.ok(editor.includes("paper-reader-cm-heading-"));
 assert.ok(editor.includes("pointer selection never moves the title"));
 assert.ok(!editor.includes("pointerSelectingHeading"));
 assert.ok(!editor.includes("if (!heading || intersectsSelection"));
+assert.ok(editor.includes("headingStyleUpdate"));
+assert.ok(editor.includes("line.from + marker.length"));
 assert.ok(editor.includes("codicon-note"));
 assert.ok(editor.includes("updateMarkdownFontSizes"));
 assert.ok(editor.includes("documentBlockPreview"));
@@ -37,6 +39,9 @@ assert.ok(html.includes("codemirror.bundle.js"));
 assert.ok(html.includes("codicons/codicon.css"));
 assert.ok(html.includes("paper-reader-toolbar"));
 assert.ok(html.includes('data-command="outline"'));
+assert.ok(html.includes('data-command="heading-underline"'));
+assert.ok(html.includes('title="标题"'));
+assert.ok(html.includes('title="保存"'));
 assert.ok(bundle.length > 100000, "CodeMirror bundle was not generated");
 
 const source = Array.from(

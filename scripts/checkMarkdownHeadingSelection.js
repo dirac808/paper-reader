@@ -339,6 +339,69 @@ async function main() {
         geometry.startX - 1
       } -> ${result.titleLeft}`
     );
+    await client.send("Page.navigate", {
+      url: `http://127.0.0.1:${server.address().port}/index.html`,
+    });
+    await delay(400);
+    await evaluate(
+      client,
+      `window.postMessage({type:'open',content:${JSON.stringify({
+        content: "",
+        config: { fontSizes: { body: 14, inlineMath: 15, displayMath: 18 } },
+      })}},'*')`
+    );
+    await delay(250);
+    const emptyLine = await evaluate(
+      client,
+      `(() => {
+        const line = document.querySelector('.cm-line');
+        const rect = line.getBoundingClientRect();
+        return { x: rect.left + 8, y: rect.top + rect.height / 2 };
+      })()`
+    );
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: emptyLine.x,
+      y: emptyLine.y,
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: emptyLine.x,
+      y: emptyLine.y,
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+    await evaluate(
+      client,
+      `document.querySelector('[data-command="heading"]').click()`
+    );
+    await client.send("Input.insertText", { text: "Typed heading" });
+    await delay(100);
+    const headingInputResult = await evaluate(
+      client,
+      `(() => {
+        const line = document.querySelector('.cm-line');
+        return {
+          text: line.textContent,
+          underlined: line.classList.contains('paper-reader-cm-heading-underline'),
+        };
+      })()`
+    );
+    assert.strictEqual(headingInputResult.text, "Typed heading");
+    assert.strictEqual(headingInputResult.underlined, true);
+    await evaluate(
+      client,
+      `document.querySelector('[data-command="heading-underline"]').click()`
+    );
+    const underlineToggled = await evaluate(
+      client,
+      `document.querySelector('.cm-line').classList.contains('paper-reader-cm-heading-underline')`
+    );
+    assert.strictEqual(underlineToggled, false);
     console.log(
       JSON.stringify({
         document: longDocument ? "long" : "short",

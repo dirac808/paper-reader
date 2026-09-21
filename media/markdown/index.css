@@ -673,6 +673,11 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     font-size: 1.2em;
 }
 
+.paper-reader-cm-heading-underline {
+    border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border));
+    padding-bottom: 4px !important;
+}
+
 .paper-reader-cm-math:hover,
 .paper-reader-cm-image:hover {
     border-color: var(--vscode-focusBorder);

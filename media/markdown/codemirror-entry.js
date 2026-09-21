@@ -30,6 +30,8 @@ const performanceStats = {
 };
 window.paperReaderMarkdownPerformance = performanceStats;
 const noteUpdate = StateEffect.define();
+const headingStyleUpdate = StateEffect.define();
+let headingUnderline = true;
 const noteState = StateField.define({
   create: () => [],
   update(value, transaction) {
@@ -370,9 +372,11 @@ const buildVisibleDecorations = (view) => {
       const heading = /^(#{1,6})\s+/.exec(line.text);
       if (!heading) continue;
       decorations.push(
-        Decoration.line({ class: `paper-reader-cm-heading-${heading[1].length}` }).range(
-          line.from,
-        ),
+        Decoration.line({
+          class: `paper-reader-cm-heading-${heading[1].length}${
+            headingUnderline ? ' paper-reader-cm-heading-underline' : ''
+          }`,
+        }).range(line.from),
       );
       // Keep the marker replaced so pointer selection never moves the title.
       decorations.push(
@@ -443,7 +447,9 @@ const livePreview = ViewPlugin.fromClass(
         update.viewportChanged ||
         update.selectionSet ||
         update.transactions.some((transaction) =>
-          transaction.effects.some((effect) => effect.is(noteUpdate)),
+          transaction.effects.some(
+            (effect) => effect.is(noteUpdate) || effect.is(headingStyleUpdate),
+          ),
         )
       ) {
         this.decorations = buildVisibleDecorations(update.view);
@@ -614,15 +620,35 @@ const cycleHeading = () => {
   const current = /^(#{1,6})\s+/.exec(line.text);
   const level = current ? (current[1].length % 6) + 1 : 1;
   const marker = `${'#'.repeat(level)} `;
-  view.dispatch({
+  const range = view.state.selection.main;
+  const transaction = view.state.update({
     changes: {
       from: line.from,
       to: line.from + (current ? current[0].length : 0),
       insert: marker,
     },
+  });
+  const selection = range.empty
+    ? { anchor: line.from + marker.length }
+    : {
+      anchor: transaction.changes.mapPos(range.from, 1),
+      head: transaction.changes.mapPos(range.to, -1),
+    };
+  view.dispatch({
+    changes: transaction.changes,
+    selection,
     scrollIntoView: true,
   });
   view.focus();
+};
+
+const toggleHeadingUnderline = () => {
+  headingUnderline = !headingUnderline;
+  toolbar?.querySelector('[data-command="heading-underline"]')?.setAttribute(
+    'aria-pressed',
+    String(headingUnderline),
+  );
+  view?.dispatch({ effects: headingStyleUpdate.of(null) });
 };
 
 const renderOutline = () => {
@@ -672,6 +698,7 @@ const runToolbarCommand = (command) => {
     case 'undo': undo(view); break;
     case 'redo': redo(view); break;
     case 'heading': cycleHeading(); break;
+    case 'heading-underline': toggleHeadingUnderline(); break;
     case 'bold': replaceSelection('**', '**', 'text'); break;
     case 'italic': replaceSelection('*', '*', 'text'); break;
     case 'strike': replaceSelection('~~', '~~', 'text'); break;
