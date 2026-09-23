@@ -2,7 +2,7 @@
   "name": "paper-reader",
   "displayName": "Paper Reader",
   "description": "A VS Code research paper reader with PDF viewing, Codex context actions, MinerU extraction, and AI translation.",
-  "version": "1.4.14",
+  "version": "1.4.25",
   "publisher": "paper-reader-lab",
   "repository": {
     "type": "git",
@@ -30,6 +30,8 @@
     "onCommand:dipe-paper-reader.testSendToCodex",
     "onCommand:dipe-paper-reader.sendSelectionToCodex",
     "onCommand:dipe-paper-reader.openMarkdownWysiwyg",
+    "onCommand:dipe-paper-reader.startCursorDiagnostic",
+    "onCommand:dipe-paper-reader.stopCursorDiagnostic",
     "onCommand:dipe-paper-reader.openMarkdownTextPreview",
     "onCommand:dipe-paper-reader.normalizeMarkdownMath",
     "onCommand:dipe-paper-reader.selfCheck",
@@ -110,6 +112,14 @@
       {
         "command": "dipe-paper-reader.openMarkdownWysiwyg",
         "title": "Paper Reader: Open Markdown"
+      },
+      {
+        "command": "dipe-paper-reader.startCursorDiagnostic",
+        "title": "Paper Reader: Start Cursor Diagnostic"
+      },
+      {
+        "command": "dipe-paper-reader.stopCursorDiagnostic",
+        "title": "Paper Reader: Stop Cursor Diagnostic"
       },
       {
         "command": "dipe-paper-reader.openMarkdownTextPreview",
@@ -522,6 +532,7 @@
     "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.5",
     "@codemirror/view": "^6.43.12",
+    "@lezer/common": "^1.5.2",
     "@vscode/codicons": "^0.0.46-24",
     "katex": "^0.17.0",
     "pdfjs-dist": "^2.16.105",

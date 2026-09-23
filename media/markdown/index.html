@@ -20,21 +20,20 @@
             <button type="button" data-command="undo" title="撤销" aria-label="撤销"><span class="codicon codicon-discard"></span></button>
             <button type="button" data-command="redo" title="重做" aria-label="重做"><span class="codicon codicon-redo"></span></button>
             <span class="paper-reader-toolbar-separator"></span>
-            <button type="button" data-command="heading" title="标题" aria-label="标题"><span class="codicon codicon-symbol-keyword"></span></button>
-            <button type="button" data-command="heading-underline" title="标题下划线" aria-label="标题下划线" aria-pressed="true"><span class="codicon codicon-horizontal-rule"></span></button>
+            <button type="button" data-command="heading" title="标题（Ctrl+Shift+1 大 / Ctrl+Shift+2 中 / Ctrl+Shift+3 小）" aria-label="标题"><span class="codicon codicon-symbol-keyword"></span></button>
+            <button type="button" data-command="underline" title="下划线" aria-label="下划线"><span class="codicon codicon-edit"></span></button>
             <button type="button" data-command="bold" title="加粗" aria-label="加粗"><span class="codicon codicon-bold"></span></button>
             <button type="button" data-command="italic" title="斜体" aria-label="斜体"><span class="codicon codicon-italic"></span></button>
-            <button type="button" data-command="strike" title="删除线" aria-label="删除线"><span class="codicon codicon-strikethrough"></span></button>
             <button type="button" data-command="link" title="链接" aria-label="链接"><span class="codicon codicon-link"></span></button>
             <span class="paper-reader-toolbar-separator"></span>
             <button type="button" data-command="unordered-list" title="无序列表" aria-label="无序列表"><span class="codicon codicon-list-unordered"></span></button>
             <button type="button" data-command="ordered-list" title="有序列表" aria-label="有序列表"><span class="codicon codicon-list-ordered"></span></button>
             <button type="button" data-command="checklist" title="任务列表" aria-label="任务列表"><span class="codicon codicon-checklist"></span></button>
-            <button type="button" data-command="quote" title="引用" aria-label="引用"><span class="codicon codicon-quote"></span></button>
-            <button type="button" data-command="inline-code" title="行内代码" aria-label="行内代码"><span class="codicon codicon-symbol-operator"></span></button>
-            <button type="button" data-command="code-block" title="代码块" aria-label="代码块"><span class="codicon codicon-code"></span></button>
+            <button type="button" data-command="inline-code" title="行内代码（Ctrl+Shift+7）" aria-label="行内代码"><span class="codicon codicon-symbol-text"></span></button>
+            <button type="button" data-command="code-block" title="代码块（Ctrl+Shift+8）" aria-label="代码块"><span class="codicon codicon-code"></span></button>
             <button type="button" data-command="table" title="表格" aria-label="表格"><span class="codicon codicon-table"></span></button>
-            <button type="button" data-command="math" title="独立公式" aria-label="独立公式"><span class="codicon codicon-symbol-numeric"></span></button>
+            <button type="button" data-command="inline-math" title="行内公式（Ctrl+Shift+9）" aria-label="行内公式"><span class="codicon codicon-bracket"></span></button>
+            <button type="button" data-command="math" title="独立公式（Ctrl+Shift+0）" aria-label="独立公式"><span class="codicon codicon-symbol-function"></span></button>
             <button type="button" data-command="image" title="图片" aria-label="图片"><span class="codicon codicon-file-media"></span></button>
             <button type="button" data-command="font-sizes" title="字号" aria-label="字号" aria-expanded="false"><span class="codicon codicon-text-size"></span></button>
             <span class="paper-reader-toolbar-spacer"></span>
@@ -49,6 +48,18 @@
             <label>Inline math <span><input type="number" data-font-size="inlineMath" min="10" max="32" step="1" inputmode="numeric" /> px</span></label>
             <label>Display math <span><input type="number" data-font-size="displayMath" min="10" max="32" step="1" inputmode="numeric" /> px</span></label>
             <button type="button" class="paper-reader-font-reset" data-font-action="reset">Reset defaults</button>
+        </div>
+        <div id="paper-reader-table-panel" role="dialog" aria-label="Insert Markdown table" hidden>
+            <div class="paper-reader-table-panel-header">
+                <strong>Insert table</strong>
+                <button type="button" data-table-action="close" title="Close" aria-label="Close table settings"><span class="codicon codicon-close"></span></button>
+            </div>
+            <label>Rows <input type="number" data-table-size="rows" min="1" max="50" step="1" value="3" inputmode="numeric" /></label>
+            <label>Columns <input type="number" data-table-size="columns" min="1" max="20" step="1" value="3" inputmode="numeric" /></label>
+            <div class="paper-reader-table-panel-actions">
+                <button type="button" data-table-action="insert">Insert</button>
+                <button type="button" data-table-action="close">Cancel</button>
+            </div>
         </div>
         <div id="paper-reader-workspace">
             <aside id="paper-reader-outline" aria-label="Document outline" hidden></aside>

@@ -227,6 +227,16 @@ export function activate(
   );
   context.subscriptions.push(
     vscode.commands.registerCommand(
+      'dipe-paper-reader.startCursorDiagnostic',
+      () => MarkdownWysiwygProvider.startCursorDiagnostic()
+    ),
+    vscode.commands.registerCommand(
+      'dipe-paper-reader.stopCursorDiagnostic',
+      () => MarkdownWysiwygProvider.stopCursorDiagnostic()
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
       'dipe-paper-reader.openPdf',
       async (resource?: vscode.Uri) => {
         const uri = resource || vscode.window.activeTextEditor?.document.uri;

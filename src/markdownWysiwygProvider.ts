@@ -21,6 +21,7 @@ type MarkdownSelectionAnchor = {
 type MarkdownOpenPayload = {
   content: string;
   rootPath: string;
+  documentBasePath: string;
   documentCacheId: string;
   config: {
     editMode: 'wysiwyg' | 'ir';
@@ -226,6 +227,49 @@ export async function openMarkdownNote(
 export class MarkdownWysiwygProvider
   implements vscode.CustomTextEditorProvider {
   public static readonly viewType = MARKDOWN_VIEW_TYPE;
+  private static cursorDiagnosticOutput: vscode.OutputChannel | undefined;
+  private static latestPanel: vscode.WebviewPanel | undefined;
+  private static readonly diagnosticPanels = new Set<vscode.WebviewPanel>();
+
+  private static getCursorDiagnosticOutput(): vscode.OutputChannel {
+    if (!MarkdownWysiwygProvider.cursorDiagnosticOutput) {
+      MarkdownWysiwygProvider.cursorDiagnosticOutput = vscode.window.createOutputChannel(
+        'Paper Reader Cursor Diagnostic'
+      );
+    }
+    return MarkdownWysiwygProvider.cursorDiagnosticOutput;
+  }
+
+  public static startCursorDiagnostic(): void {
+    const panel = MarkdownWysiwygProvider.latestPanel;
+    if (!panel) {
+      vscode.window.showErrorMessage(
+        'Open a Paper Reader Markdown editor before starting cursor diagnostics.'
+      );
+      return;
+    }
+    const output = MarkdownWysiwygProvider.getCursorDiagnosticOutput();
+    output.clear();
+    output.appendLine(`Started ${new Date().toISOString()} | ${panel.title}`);
+    output.show(true);
+    void panel.webview.postMessage({ type: 'cursorDiagnosticStart' });
+    vscode.window.showInformationMessage(
+      'Cursor diagnostic is recording. Reproduce the click, then run Stop Cursor Diagnostic.'
+    );
+  }
+
+  public static stopCursorDiagnostic(): void {
+    const panels = [...MarkdownWysiwygProvider.diagnosticPanels];
+    if (!panels.length) {
+      vscode.window.showInformationMessage(
+        'No Paper Reader cursor diagnostic is currently recording.'
+      );
+      return;
+    }
+    for (const panel of panels) {
+      void panel.webview.postMessage({ type: 'cursorDiagnosticStop' });
+    }
+  }
 
   public constructor(
     private readonly context: vscode.ExtensionContext,
@@ -236,6 +280,7 @@ export class MarkdownWysiwygProvider
     document: vscode.TextDocument,
     webviewPanel: vscode.WebviewPanel
   ): void {
+    MarkdownWysiwygProvider.latestPanel = webviewPanel;
     const webview = webviewPanel.webview;
     const documentFolder = getUriFolder(document.uri);
     const workspaceRoots =
@@ -288,6 +333,10 @@ export class MarkdownWysiwygProvider
       rootPath: webview
         .asWebviewUri(getMarkdownResourceRoot(this.context))
         .toString(),
+      documentBasePath: `${webview
+        .asWebviewUri(documentFolder)
+        .toString()
+        .replace(/\/$/, '')}/`,
       documentCacheId: `${document.uri.scheme}:${document.uri.toString()}`,
       config: getMarkdownConfig(document.uri),
     });
@@ -336,6 +385,41 @@ export class MarkdownWysiwygProvider
         switch (message.type) {
           case 'init':
             emit('open', openPayload());
+            break;
+          case 'cursorDiagnosticLog':
+            if (Array.isArray(message.content)) {
+              MarkdownWysiwygProvider.diagnosticPanels.delete(webviewPanel);
+              const output = MarkdownWysiwygProvider.getCursorDiagnosticOutput();
+              const logPath = path.join(
+                path.dirname(document.uri.fsPath),
+                `${path.basename(
+                  document.uri.fsPath
+                )}.cursor-diagnostic-${Date.now()}.jsonl`
+              );
+              fs.writeFileSync(
+                logPath,
+                message.content
+                  .map((record) => JSON.stringify(record))
+                  .join('\n') + '\n',
+                'utf8'
+              );
+              output.appendLine(
+                `Collected ${
+                  message.content.length
+                } diagnostic records for ${document.uri.toString()}`
+              );
+              output.appendLine(`Log file: ${logPath}`);
+              for (const record of message.content) {
+                output.appendLine(JSON.stringify(record));
+              }
+              output.show(true);
+              vscode.window.showInformationMessage(
+                `Cursor diagnostic saved to ${logPath}`
+              );
+            }
+            break;
+          case 'cursorDiagnosticStarted':
+            MarkdownWysiwygProvider.diagnosticPanels.add(webviewPanel);
             break;
           case 'save':
             if (typeof message.content === 'string') {
@@ -535,6 +619,10 @@ export class MarkdownWysiwygProvider
     });
 
     webviewPanel.onDidDispose(() => {
+      MarkdownWysiwygProvider.diagnosticPanels.delete(webviewPanel);
+      if (MarkdownWysiwygProvider.latestPanel === webviewPanel) {
+        MarkdownWysiwygProvider.latestPanel = undefined;
+      }
       void flush();
       documentSubscription.dispose();
       annotationSubscription?.dispose();

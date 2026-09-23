@@ -41,6 +41,13 @@ assert.ok(markdownEditor.includes("view.visibleRanges"));
 assert.ok(markdownEditor.includes("EditorState"));
 assert.ok(markdownEditor.includes("Decoration.replace"));
 assert.ok(
+  markdownEditor.includes(
+    "if (selection.empty) return selection.from >= from && selection.from <= to"
+  )
+);
+assert.ok(markdownEditor.includes("const sourcePositionAtPoint = (editorView, event) =>"));
+assert.ok(markdownEditor.includes("view.dom.addEventListener('click'"));
+assert.ok(
   !markdownEditor.includes("doc.toString()") ||
     markdownEditor.includes("selectionAnchor")
 );
@@ -59,16 +66,27 @@ assert.ok(markdownHtml.includes('data-command="search"'));
 assert.ok(markdownEditor.includes("openSearchPanel"));
 assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
-assert.ok(markdownEditor.includes("pointer selection never moves the title"));
+assert.ok(markdownEditor.includes("class TableWidget"));
+assert.ok(markdownStyles.includes("paper-reader-cm-table"));
+assert.ok(markdownEditor.includes("markdownLanguage.parser.parse(source, fragments)"));
+assert.ok(markdownEditor.includes("TreeFragment.applyChanges"));
+assert.ok(!markdownEditor.includes("EditorView.atomicRanges.of"));
+assert.ok(!markdownEditor.includes("y: rect.top + rect.height / 2"));
 assert.ok(!markdownEditor.includes("pointerSelectingHeading"));
 assert.ok(!markdownEditor.includes("if (!heading || intersectsSelection"));
-assert.ok(markdownStyles.includes("padding-top: 20px !important"));
+assert.ok(markdownStyles.includes("paper-reader-cm-heading-marker"));
+assert.ok(!markdownStyles.includes("padding-top: 20px !important"));
 assert.ok(!markdownStyles.includes("margin-top: 20px !important"));
 assert.ok(markdownStyles.includes("--paper-reader-display-math-font-size"));
-assert.ok(markdownStyles.includes("paper-reader-cm-heading-underline"));
+assert.ok(markdownStyles.includes("text-decoration-line: underline"));
+assert.ok(markdownStyles.includes("text-underline-offset: 4px"));
+assert.ok(markdownStyles.includes("paper-reader-cm-heading-text"));
+assert.ok(!markdownStyles.includes("paper-reader-cm-heading-underline"));
 assert.ok(markdownHtml.includes('data-command="font-sizes"'));
-assert.ok(markdownHtml.includes('data-command="heading-underline"'));
-assert.ok(markdownHtml.includes('title="标题"'));
+assert.ok(markdownHtml.includes('data-command="underline"'));
+assert.ok(markdownHtml.includes('title="下划线"'));
+assert.ok(!markdownHtml.includes('data-command="heading-underline"'));
+assert.ok(markdownHtml.includes('title="标题（Ctrl+Shift+1 大'));
 assert.ok(markdownEditor.includes("updateMarkdownFontSizes"));
 assert.ok(markdownProvider.includes("markdown.displayMathFontSize"));
 assert.ok(markdownEditor.includes("codicon-note"));
