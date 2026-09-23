@@ -2,7 +2,7 @@
 
 Paper Reader 是面向科研论文阅读的 VS Code 插件。当前代码库包含 PDF 阅读、MinerU 文档解析、AI 全文翻译、Markdown 编辑与预览、PDF/Markdown/代码选区发送到 Codex、Markdown 笔记和配置自检等功能。
 
-本文档同时记录当前实现的架构、已经确认的问题、测试方法和真实测试结果。特别是图片显示和 Markdown 光标定位目前仍然需要继续验收，不能把自动化测试中的局部通过结果理解为全部问题已经解决。
+本文档记录当前架构、Markdown 编辑体验问题的根因、五阶段重构及可复现的验证方法。Markdown 光标点击与拖拽选择已按字符偏移严格回归；测试结果和已知边界见下文及[重构问题日志](logs/README.md)。
 
 ## 当前架构
 
@@ -54,64 +54,23 @@ openai.chatgpt
 
 Paper Reader 不能读取闭源 Codex 的内部 API，只能通过公开命令和当前活动编辑器/临时文档桥接。
 
-## 已确认的问题
+## Markdown 编辑体验问题与根因
 
-### 1. 图片显示为空
+### 1. 指针操作期间光标位置漂移或拖选失效
 
-现象：
+最初的问题不只发生在公式：普通正文、标题、引用、表格和代码也会跳到下一行或块尾；源码字符与像素位置不一致时，拖动选区也会丢失。
 
-- Markdown 中图片语法存在，例如：
+根因是自定义编辑器在同一指针手势中同时改变 CodeMirror selection、Markdown 装饰和 DOM：`pointerdown` 后源码可能被预览 Widget 替换，浏览器随后派发的兼容 `mousedown`/`click` 命中不同 DOM。旧逻辑会在后续事件重新推算位置，或在预览重新显示后覆盖 selection。公式还有独立的映射问题：KaTeX 字形与 LaTeX 源字符并非一对一，按宽度比例换算偏移必然不精确。此前测试只验证落在同一块或允许数个字符误差，不能反映用户要求的逐字符精度。
 
-  ```markdown
-  ![](assets/images/223ed8088c13ab489352fd30b711eb9fc1e7b8178d1a92ac9b8e903bd2580bc2.jpg)
-  ```
+当前指针流程在手势开始时记录来源态 DOM caret 对应的源码位置，并保留手势起点类型，兼容鼠标事件不会覆盖原始位置。短点击在 `click` 阶段应用被冻结的位置；拖动超过阈值后，由指针移动更新 CodeMirror anchor/head，释放时校准最终端点。Widget 预览的源码切换与源码态定位分开处理。KaTeX 源码 glyph 信息按公式缓存，渲染后的实际字形矩形用于命中测试，不通过公式整体宽度猜偏移。
 
-- 图片位置会预留出一块高度，但图片内容为空，或者只看到标题/图注。
-- 典型截图中“图 1”对应的原始 JPG 实际存在且不是空白图。
+### 2. 长文档更新成本和重复解析
 
-已经确认的事实：
+旧版同时维护 CodeMirror 解析树、独立 TreeFragment/块扫描状态和重复的装饰更新路径；编辑后不同索引可能使用不同步的解析结果，长文档滚动与修改时增加额外工作。重构后由 CodeMirror/Lezer 的语法树作为 Markdown 结构来源，在变更涉及的范围更新块索引和可见区装饰；全文级扫描次数、解析/区间扫描/更新延迟均有统计和性能守卫。KaTeX hit map 缓存也避免在每次点击时重新解析公式。
 
-1. `E:\Desktop\repo\paper-reader\test.md` 所在目录没有 `assets/images`，因此直接打开这个文件时，下面的相对路径没有对应文件。这种情况下图片加载失败是正确结果，不是 MinerU 公式或 KaTeX 的问题。
-2. 翻译输出目录中确实存在对应资源，例如：
+五阶段设计与问题处置记录见[logs/README.md](logs/README.md)。
 
-   ```text
-   E:\Desktop\DIPE\paper-reader-output\translations\Distributed quantum inner product estimation\assets\images\223ed8088c13ab489352fd30b711eb9fc1e7b8178d1a92ac9b8e903bd2580bc2.jpg
-   ```
-
-   该图片已验证自然尺寸为 `1296 x 232`，文件内容正常。
-3. Markdown Provider 将当前 Markdown 文件父目录加入 `webview.options.localResourceRoots`。
-4. 图片资源现在由主进程生成当前文档目录对应的 `documentBasePath`，前端 `ImageWidget` 使用 `new URL(relativePath, documentBasePath)` 得到完整的 Webview URI，再赋值给 `image.src`。图片加载不再只依赖 HTML `<base>` 的隐式解析。
-5. 自动化测试服务器可以验证相对路径和图片自然尺寸，但不能替代真实 VS Code Webview 的 URI/CSP/本地文件访问测试。
-
-因此目前图片问题有两个不同层次，不能混为一谈：
-
-- **资源不存在**：`test.md` 原目录没有图片，这是测试数据布局问题。
-- **资源存在但 Webview 仍为空**：需要在真实 VS Code Webview 中检查图片最终 `src`、网络请求状态和 `naturalWidth`。当前代码已经改为显式 Webview URI；如果仍失败，应继续根据开发者工具中的最终 URI 和错误信息处理具体平台问题。
-
-真实诊断方式见“图片专项测试”。
-
-### 2. Markdown 光标位置失真
-
-用户可观察到的现象：
-
-- 点击第三级标题、正文、引用、独立公式或行内公式后，光标可能跳到下一行、源码块开头、公式结尾，或者文档前部。
-- 文档前半部分有时正常，向后滚动到长文档后半部分后失真明显增多。
-- 公式和图片等可变高度 Widget 越多，问题越容易出现。
-
-已经确认的根因和历史原因：
-
-1. CodeMirror 的 `EditorView.posAtCoords()` 会依赖编辑器对当前文档布局的测量结果。前方存在大量可变高度 Widget 时，真实鼠标位置与 CodeMirror 的行布局模型可能不同，导致点击某个 `.cm-line` 后返回下一行或错误源码位置。
-2. 渲染公式的 KaTeX 字形没有和 LaTeX 源码字符一一对应的几何映射。不能用 KaTeX 宽度比例反推源码字符偏移。
-3. 旧实现曾在 Widget 点击后使用 `requestAnimationFrame` 等待源码重新挂载，再用坐标寻找“最近”源码位置。这种延迟定位会在用户已经继续点击、输入或删除后覆盖新的 selection，是光标突然跳动的直接原因。
-4. 目前已经移除这段延迟定位、重试和 `posAtCoords()` 反推逻辑。点击渲染 Widget 现在只负责切回对应源码块并把初始 selection 放在源码块起点；源码态的鼠标定位使用浏览器真实 DOM caret 和 CodeMirror `posAtDOM()`，并在 `mousedown` 阶段设置 selection。
-
-当前状态必须如实理解：
-
-- 预览 Widget 的块范围测试已经通过。
-- “源码态点击后是否精确落在指定字符偏移”仍未全部通过，不能声称光标问题已经根治。
-- 最近一次完整测试的源码字符级结果为：独立公式 `156/300`，行内公式 `21/100`。这些失败必须继续处理，不能用“仍在同一个公式块内”替代“精确落在用户点击的字符附近”。
-
-## 当前自动化测试结果
+## 验证
 
 测试文件：
 
@@ -119,11 +78,7 @@ Paper Reader 不能读取闭源 Codex 的内部 API，只能通过公开命令�
 E:\Desktop\repo\paper-reader\test.md
 ```
 
-测试使用的翻译目录资源根目录：
-
-```text
-E:\Desktop\DIPE\paper-reader-output\translations\Distributed quantum inner product estimation
-```
+严格逐点测试通过 `MARKDOWN_FIXTURE` 指向该文件；它检查鼠标实际命中位置和 CodeMirror selection 的字符偏移完全相等，而不是只检查是否仍在同一块内。图片路径需要与文档的资源目录匹配；仓库根目录的 `test.md` 没有配套的 `assets/images`，因此不可把此处的缺图误判为编辑器渲染回归。
 
 
 ## 开发环境安装
@@ -331,21 +286,11 @@ Developer: Reload Window
 
 若本机同时安装了旧版 Paper Reader、`vscode-pdf` 或 Office Viewer，必须在 PDF 的 `Open With...` 中确认实际使用的编辑器，避免把其他插件的行为误判为 Paper Reader 的行为。
 
-## 当前验收结论
+## 验收范围与已知边界
 
-当前可以确认：
+1.5.0 验证结果以 `logs/README.md` 记录的最终运行结果和发布提交为准。严格位置测试必须通过 `test.md` 全量扫描，且点击预期偏移与实际 CodeMirror selection 精确相等；短文档测试覆盖正向/反向拖选。性能守卫检查可视区扫描与局部更新，不把单一机器的耗时解释为所有设备的绝对性能保证。
 
-- 基础编译、Lint、单元测试和性能守卫通过。
-- Markdown 长文档的可视区域渲染策略已经建立。
-- 预览层的公式、正文和图片自动化测试在正确资源根目录下通过。
-- 图片文件本身和翻译输出目录的资源结构已确认存在。
-
-当前仍需在用户的真实 VS Code 窗口确认：
-
-- Markdown 源码字符级光标定位已经全部正确。
-- 公式、图片和编辑态切换在所有长文档位置都没有跳动。
-
-因此，在图片真实 Webview 诊断和 `sourceCaret` 字符级测试全部通过前，不应发布为“光标和图片问题已经完全修复”的正式稳定版本。
+`test.md` 的图片相对路径没有同目录资源，因此该文件本身不适合作为图片加载验收样本。图片问题需用包含真实 `assets/images` 的 Markdown 文档在 VS Code Webview 中验证；这项检查与光标回归彼此独立。
 
 ## License
 

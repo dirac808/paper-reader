@@ -218,7 +218,7 @@ const clickElement = async (client, selector) => {
     const rect = target.getBoundingClientRect();
     return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
   })()`);
-  assert.ok(point, `Missing click target: ${selector}`);
+  assert.ok(point, `Missing click target: ${selector}: ${JSON.stringify(await evaluate(client, '({perf:window.paperReaderMarkdownPerformance, lines:[...document.querySelectorAll(".cm-line")].map(line=>line.textContent)})'))}`);
   await client.send('Input.dispatchMouseEvent', {
     type: 'mousePressed', x: point.x, y: point.y,
     button: 'left', buttons: 1, clickCount: 1,
@@ -281,6 +281,7 @@ const makeProseTargets = (source, displayTargets) => {
       trimmed.length >= 3 &&
       !inDisplay &&
       !/^\s*(?:#{1,6}\s|```|~~~|\$\$|\\\[|!\[|\||>)/.test(line) &&
+      !/^\s*</.test(line) &&
       !line.includes('$') &&
       !/<(?:sup|sub)\b/i.test(line)
     ) {
@@ -374,53 +375,22 @@ async function runStrictSweep(client, source) {
   const clickSourceCharacter = async (target, offset, kind) => {
     await evaluate(client, `window.paperReaderMarkdownPerformance.scrollToPosition(${offset})`);
     await delay(80);
-    const lineStart = normalized.lastIndexOf('\n', offset - 1) + 1;
-    const lineEndIndex = normalized.indexOf('\n', offset);
-    const lineEnd = lineEndIndex < 0 ? normalized.length : lineEndIndex;
-    const lineText = normalized.slice(lineStart, lineEnd);
-    const targetRaw = normalized.slice(target.from, target.to);
-    const point = await evaluate(client, `(() => {
-      const wanted = ${JSON.stringify(lineText)};
-      const raw = ${JSON.stringify(targetRaw)};
-      const sourceOffset = ${offset - lineStart};
-      const lines = [...document.querySelectorAll('.cm-line')];
-      const line = lines.find((item) =>
-        item.dataset.paperReaderLineFrom === String(${lineStart}) &&
-        item.textContent === wanted) || lines.find((item) => item.textContent.includes(wanted));
-      const targetLine = line || lines.find((item) =>
-        item.dataset.paperReaderLineFrom === String(${lineStart}) && raw && item.textContent.includes(raw));
-      if (!targetLine) return null;
-      const walker = document.createTreeWalker(targetLine, NodeFilter.SHOW_TEXT);
-      let node;
-      const baseOffset = targetLine.textContent === wanted
-        ? Math.max(0, targetLine.textContent.indexOf(wanted)) + sourceOffset
-        : Math.max(0, targetLine.textContent.indexOf(raw)) + ${offset - target.from};
-      let remaining = baseOffset;
-      while ((node = walker.nextNode())) {
-        if (remaining <= node.data.length) break;
-        remaining -= node.data.length;
-      }
-      if (!node || !node.data.length) return null;
-      const start = Math.max(0, Math.min(remaining, node.data.length - 1));
-      const range = document.createRange();
-      range.setStart(node, start);
-      range.setEnd(node, Math.min(start + 1, node.data.length));
-      const rect = range.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
-        lineRect: (() => { const value = targetLine.getBoundingClientRect(); return {
-          left: value.left, top: value.top, right: value.right, bottom: value.bottom,
-        }; })(),
-        hit: document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2)
-          ?.closest('.cm-line') === targetLine };
-    })()`);
-    if (!point || point.y < 0 || point.y > 2000) {
+    const point = await evaluate(client,
+      `window.paperReaderMarkdownPerformance.pointForPosition(${offset})`);
+    if (!point || point.y < 0 || point.y > 2000 || point.resolved !== offset) {
       sourceFailures[kind].push({ target, offset, reason: 'source-character-not-mounted', point });
       return;
     }
     await dispatchClick(point);
-    const caret = await evaluate(client, 'window.paperReaderMarkdownPerformance.selectionFrom');
-    if (Math.abs(caret - offset) > 1) {
-      sourceFailures[kind].push({ target, offset, caret, point, reason: 'source-character-offset-mismatch' });
+    const result = await evaluate(client, `({
+      caret: window.paperReaderMarkdownPerformance.selectionFrom,
+      text: window.paperReaderMarkdownPerformance.selectionText,
+    })`);
+    if (result.caret !== offset) {
+      sourceFailures[kind].push({
+        target, offset, ...result, point,
+        reason: 'source-character-offset-mismatch',
+      });
     }
   };
 
@@ -511,7 +481,14 @@ async function runStrictSweep(client, source) {
     }
   }
   const selectedInline = process.env.MARKDOWN_SKIP_INLINE === 'true'
-    ? [] : evenlySpaced(inlineTargets, 100);
+    ? [] : (() => {
+      const offsets = String(process.env.MARKDOWN_ONLY_INLINE_OFFSETS || '')
+        .split(',').filter(Boolean).map(Number);
+      const targets = offsets.length
+        ? inlineTargets.filter((target) => offsets.includes(target.from))
+        : inlineTargets;
+      return evenlySpaced(targets, 100);
+    })();
   for (const target of selectedInline) {
     const activation = await clickWidget(target, '.paper-reader-cm-inline-math', 0.5, 'inline');
     if (activation?.caret >= target.from && activation.caret <= target.to) {
@@ -525,33 +502,17 @@ async function runStrictSweep(client, source) {
   for (const target of selectedProse) {
     await evaluate(client, `window.paperReaderMarkdownPerformance.scrollToPosition(${target.from})`);
     await delay(80);
-    const point = await evaluate(client, `(() => {
-      const line = [...document.querySelectorAll('.cm-line')]
-        .find((item) => item.dataset.paperReaderLineFrom === String(${target.lineStart}) &&
-          item.textContent === ${JSON.stringify(target.line)});
-      if (!line) return null;
-      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
-      let node;
-      let offset = ${target.from - target.lineStart};
-      while ((node = walker.nextNode())) {
-        if (offset <= node.data.length) break;
-        offset -= node.data.length;
-      }
-      if (!node || !node.data.length) return null;
-      const range = document.createRange();
-      const start = Math.min(offset, node.data.length - 1);
-      range.setStart(node, start);
-      range.setEnd(node, Math.min(start + 1, node.data.length));
-      const rect = range.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`);
+    const point = await evaluate(client,
+      `window.paperReaderMarkdownPerformance.pointForPosition(${target.from})`);
     if (!point) {
       failures.prose.push({ target, reason: 'position-not-visible' });
       continue;
     }
     await dispatchClick(point);
     const caret = await evaluate(client, 'window.paperReaderMarkdownPerformance.selectionFrom');
-    if (Math.abs(caret - target.from) > 2) failures.prose.push({ target, caret, point });
+    if (point.resolved !== target.from || caret !== target.from) {
+      failures.prose.push({ target, caret, point });
+    }
   }
 
   const imageTargets = [];
@@ -805,6 +766,18 @@ async function main() {
         await delay(30);
         const actual = await evaluate(client,
           'window.paperReaderMarkdownPerformance.selectionFrom');
+        if (selector.includes('.paper-reader-cm-math')) {
+          const activation = await evaluate(client,
+            'window.paperReaderMarkdownPerformance.lastWidgetActivation');
+          assert.ok(activation?.clickedSource,
+            `Formula glyph has no source mapping: ${JSON.stringify({character, activation})}`);
+          const expected = activation.sourceRange.start + activation.clickedSource.end;
+          assert.strictEqual(actual, expected,
+            `${selector} click missed its mapped source boundary: ${JSON.stringify({
+              character, actual, expected, activation,
+            })}`);
+          return actual;
+        }
         if (!selector.includes('.paper-reader-cm-')) {
           assert.strictEqual(actual, sourceOffset,
             `${selector} source click missed its character boundary: ${JSON.stringify({
@@ -2377,7 +2350,7 @@ async function main() {
         const actual = await evaluate(client,
           'window.paperReaderMarkdownPerformance?.selectionFrom');
         const expected = preciseDocument.indexOf(phrase) + index;
-        assert.ok(Math.abs(actual - expected) <= 2,
+        assert.strictEqual(actual, expected,
           `Caret missed clicked character: ${JSON.stringify({phrase, index, actual, expected})}`);
       }
     }
@@ -2386,6 +2359,8 @@ async function main() {
       const rect = node.getBoundingClientRect();
       return {x: rect.left + rect.width * .7, y: rect.top + rect.height / 2};
     })()`);
+    const formulaMapBuildsBeforeClick = await evaluate(client,
+      'window.paperReaderMarkdownPerformance.mathMapBuilds');
     await client.send('Input.dispatchMouseEvent', {
       type: 'mousePressed', ...formulaPoint, button: 'left', buttons: 1, clickCount: 1,
     });
@@ -2394,6 +2369,10 @@ async function main() {
     });
     const formulaCaret = await evaluate(client,
       'window.paperReaderMarkdownPerformance?.selectionFrom');
+    const formulaMapBuildsAfterClick = await evaluate(client,
+      'window.paperReaderMarkdownPerformance.mathMapBuilds');
+    assert.strictEqual(formulaMapBuildsAfterClick, formulaMapBuildsBeforeClick,
+      'Formula activation reparsed KaTeX source on the pointer path');
     const formulaStart = preciseDocument.indexOf('$abcdefghij$');
     assert.ok(formulaCaret >= formulaStart + 5 && formulaCaret <= formulaStart + 10,
       `Inline formula caret ignored click position: ${JSON.stringify({formulaCaret, formulaStart})}`);
@@ -2454,6 +2433,8 @@ async function main() {
         maxUpdateMs: window.paperReaderMarkdownPerformance.maxUpdateMs,
         maxBlockScanMs: window.paperReaderMarkdownPerformance.maxBlockScanMs,
         maxParseMs: window.paperReaderMarkdownPerformance.maxParseMs,
+        fullSourceScans: window.paperReaderMarkdownPerformance.fullSourceScans,
+        latency: window.paperReaderMarkdownPerformance.latency,
         tables: document.querySelectorAll('.paper-reader-cm-table').length,
         math: document.querySelectorAll('.paper-reader-cm-math').length,
       })`);
@@ -2469,11 +2450,17 @@ async function main() {
       const editedLarge = await evaluate(client, `({
         content: window.paperReaderMarkdownPerformance.documentText.slice(-140),
         parseMs: window.paperReaderMarkdownPerformance.parseMs,
+        fullSourceScans: window.paperReaderMarkdownPerformance.fullSourceScans,
+        lastBlockScanRanges: window.paperReaderMarkdownPerformance.lastBlockScanRanges,
         tables: document.querySelectorAll('.paper-reader-cm-table').length,
       })`);
       assert.ok(editedLarge.content.includes('Final section!'), JSON.stringify(editedLarge));
       assert.strictEqual(editedLarge.tables, 1, JSON.stringify(editedLarge));
       assert.ok(editedLarge.parseMs < 150, JSON.stringify(editedLarge));
+      assert.strictEqual(editedLarge.fullSourceScans, largeResult.fullSourceScans,
+        `An incremental edit triggered a full-document block scan: ${JSON.stringify({largeResult, editedLarge})}`);
+      assert.ok(editedLarge.lastBlockScanRanges.every((range) => range.to - range.from < 2000),
+        `The local edit rescanned an unexpectedly large range: ${JSON.stringify(editedLarge)}`);
       console.log(JSON.stringify({
         runtimePerformance: { ...largeResult, incrementalParseMs: editedLarge.parseMs },
       }));

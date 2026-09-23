@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.5.0 (2026/09/23)
+
+- Rebuild the Markdown editor interaction path around CodeMirror 6 as the single source of truth.
+- Fix exact caret placement across prose, headings, quotes, code, tables, and rendered math, including equation tags.
+- Restore forward and reverse drag selection while keeping single-click placement stable.
+- Update visible block indexes incrementally and cache KaTeX source glyph hit maps to reduce repeated work.
+- Add strict cursor regression tests and long-document performance guards.
+- Document the root causes and five-stage refactor in `logs/README.md`.
+
 ## 1.2.2 (2022/12/23)
 
 - Fix about rendering Unicode characters

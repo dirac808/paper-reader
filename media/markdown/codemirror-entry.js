@@ -1,5 +1,4 @@
 import { EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
-import { TreeFragment } from '@lezer/common';
 import {
   Decoration,
   EditorView,
@@ -16,7 +15,13 @@ import {
   undo,
 } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language';
+import {
+  defaultHighlightStyle,
+  ensureSyntaxTree,
+  syntaxHighlighting,
+  syntaxTree,
+  syntaxTreeAvailable,
+} from '@codemirror/language';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import katex from 'katex';
 
@@ -39,6 +44,29 @@ const diagnosticRecord = (record) => {
   if (cursorDiagnosticRecords.length > cursorDiagnosticLimit) {
     cursorDiagnosticRecords.splice(0, cursorDiagnosticRecords.length - cursorDiagnosticLimit);
   }
+};
+const mathGlyphHitMaps = new WeakMap();
+const measureMathGlyphHitMap = (node, glyphs) => {
+  const origin = node.getBoundingClientRect();
+  const rects = (glyphs || []).filter((glyph) => glyph.source).flatMap((glyph) => {
+    const range = document.createRange();
+    range.setStart(glyph.node, glyph.offset);
+    range.setEnd(glyph.node, glyph.offset + 1);
+    const rect = range.getBoundingClientRect();
+    if (!rect.width || !rect.height) return [];
+    return [{
+      source: glyph.source,
+      rect: {
+        left: rect.left - origin.left,
+        right: rect.right - origin.left,
+        top: rect.top - origin.top,
+        bottom: rect.bottom - origin.top,
+        width: rect.width,
+        height: rect.height,
+      },
+    }];
+  });
+  return { rects, width: origin.width, height: origin.height };
 };
 const diagnosticElement = (node) => {
   if (!(node instanceof Element)) return null;
@@ -108,7 +136,35 @@ const performanceStats = {
   selectionText: '',
   lastUpdateMs: 0,
   maxUpdateMs: 0,
+  parseSamples: [],
+  blockScanSamples: [],
+  updateSamples: [],
+  pointerSamples: [],
+  fullSourceScans: 0,
+  mathMapBuilds: 0,
+  mathMapCacheHits: 0,
+  lastBlockScanRanges: [],
 };
+const recordSample = (samples, value) => {
+  samples.push(Number(value.toFixed(2)));
+  if (samples.length > 256) samples.shift();
+};
+const percentile = (samples, fraction) => {
+  if (!samples.length) return 0;
+  const sorted = [...samples].sort((left, right) => left - right);
+  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * fraction))];
+};
+Object.defineProperties(performanceStats, {
+  latency: { get: () => ({
+    parseP50: percentile(performanceStats.parseSamples, 0.5),
+    parseP95: percentile(performanceStats.parseSamples, 0.95),
+    blockScanP50: percentile(performanceStats.blockScanSamples, 0.5),
+    blockScanP95: percentile(performanceStats.blockScanSamples, 0.95),
+    updateP50: percentile(performanceStats.updateSamples, 0.5),
+    updateP95: percentile(performanceStats.updateSamples, 0.95),
+    pointerP95: percentile(performanceStats.pointerSamples, 0.95),
+  }) },
+});
 window.paperReaderMarkdownPerformance = performanceStats;
 Object.defineProperty(performanceStats, 'documentText', {
   get: () => view?.state.doc.toString() || '',
@@ -119,6 +175,9 @@ Object.defineProperty(performanceStats, 'documentBlocks', {
     from: block.from,
     to: block.to,
   })) || [],
+});
+Object.defineProperty(performanceStats, 'editingBlock', {
+  get: () => view?.state.field(documentBlockPreview).editingBlock || null,
 });
 Object.defineProperty(performanceStats, 'resetEditingBlock', {
   value: () => {
@@ -170,8 +229,39 @@ Object.defineProperty(performanceStats, 'scrollToPosition', {
     });
   },
 });
+Object.defineProperty(performanceStats, 'pointForPosition', {
+  value: (position) => {
+    if (!view || !Number.isInteger(position) || position < 0 || position > view.state.doc.length) {
+      return null;
+    }
+    const coords = view.coordsAtPos(position);
+    if (!coords) return null;
+    const y = (coords.top + coords.bottom) / 2;
+    const left = Math.min(coords.left, coords.right);
+    const right = Math.max(coords.left, coords.right);
+    const center = (left + right) / 2;
+    const candidates = [left, right, center];
+    for (let distance = 0.25; distance <= 3; distance += 0.25) {
+      candidates.push(left - distance, right + distance);
+    }
+    for (const x of candidates) {
+      const resolved = sourcePositionAtPoint(view, { clientX: x, clientY: y });
+      if (resolved === position) {
+        return { x, y, expected: position, resolved, coords };
+      }
+    }
+    return {
+      x: center,
+      y,
+      expected: position,
+      resolved: sourcePositionAtPoint(view, { clientX: center, clientY: y }),
+      coords,
+    };
+  },
+});
 const noteUpdate = StateEffect.define();
 const editingBlockUpdate = StateEffect.define();
+const blockIndexRefresh = StateEffect.define();
 const noteState = StateField.define({
   create: () => [],
   update(value, transaction) {
@@ -287,23 +377,38 @@ const isTableDivider = (text) => {
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 };
 
-const syntaxNodes = (tree, names) => {
-  const wanted = new Set(names);
-  const nodes = [];
-  tree.iterate({
-    enter(node) {
-      if (wanted.has(node.name)) nodes.push({
-        name: node.name,
-        from: node.from,
-        to: node.to,
-      });
-    },
-  });
-  return nodes;
+const syntaxNodesByName = (tree, from, to) => {
+  const groups = new Map([
+    ['FencedCode', []], ['Table', []], ['InlineCode', []],
+    ['Blockquote', []], ['Image', []],
+  ]);
+  tree.iterate({ from, to, enter(node) {
+    const group = groups.get(node.name);
+    if (group) group.push({ name: node.name, from: node.from, to: node.to });
+  } });
+  return groups;
 };
 
 const rangeContains = (ranges, from, to = from) =>
   ranges.some((range) => from >= range.from && to <= range.to);
+
+const findOverlappingBlock = (blocks, from, to = from) => {
+  let low = 0;
+  let high = blocks.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (blocks[middle].from <= to) low = middle + 1;
+    else high = middle;
+  }
+  for (let index = low - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.to < from) break;
+    if (block.from <= to && block.to >= from) return block;
+  }
+  return null;
+};
+
+const isInsideAnyBlock = (blocks, from, to) => Boolean(findOverlappingBlock(blocks, from, to));
 
 const sourceLines = (state, from, to) => {
   const first = state.doc.lineAt(from);
@@ -397,11 +502,21 @@ const widgetSourceRange = (node, editorView, from, to) => {
   return { start: Math.min(start, to), end: Math.max(start, Math.min(end, to)) };
 };
 
-const mapMathGlyphsToSource = (node, source) => {
+const mathSourceGlyphCache = new Map();
+const mathSourceGlyphs = (source, displayMode) => {
+  const key = `${displayMode ? 'display' : 'inline'}:${source}`;
+  if (mathSourceGlyphCache.has(key)) {
+    const cached = mathSourceGlyphCache.get(key);
+    mathSourceGlyphCache.delete(key);
+    mathSourceGlyphCache.set(key, cached);
+    performanceStats.mathMapCacheHits += 1;
+    return cached;
+  }
+  performanceStats.mathMapBuilds += 1;
   let parsed;
   try {
     parsed = katex.__parse(source, {
-      displayMode: node.classList.contains('paper-reader-cm-math'),
+      displayMode,
       throwOnError: false,
       strict: 'ignore',
     });
@@ -444,6 +559,13 @@ const mapMathGlyphsToSource = (node, source) => {
   };
   visit(parsed);
   sourceGlyphs.sort((left, right) => left.start - right.start || left.end - right.end);
+  if (mathSourceGlyphCache.size >= 128) mathSourceGlyphCache.delete(mathSourceGlyphCache.keys().next().value);
+  mathSourceGlyphCache.set(key, sourceGlyphs);
+  return sourceGlyphs;
+};
+
+const mapMathGlyphsToSource = (node, sourceGlyphs) => {
+  if (!sourceGlyphs) return null;
   const renderedText = {
     '\\vee': '∨',
     '\\ell': 'ℓ',
@@ -604,33 +726,41 @@ const mapTableCellClick = (node, editorView, event) => {
 };
 
 const activateRange = (node, from, to, event) => {
+  const started = performance.now();
   const editorView = view || EditorView.findFromDOM(node);
   if (!editorView) return;
   const sourceRange = widgetSourceRange(node, editorView, from, to);
   const isMath = node.classList.contains('paper-reader-cm-math') ||
     node.classList.contains('paper-reader-cm-inline-math');
-  const glyphs = isMath ? mapMathGlyphsToSource(node, node.dataset.source || '') : null;
+  const glyphs = isMath ? node.__paperReaderGlyphMap || null : null;
   let closestGlyph = null;
-  for (const glyph of glyphs || []) {
-    if (!glyph.source) continue;
-    const range = document.createRange();
-    range.setStart(glyph.node, glyph.offset);
-    range.setEnd(glyph.node, glyph.offset + 1);
-    const rect = range.getBoundingClientRect();
-    if (!rect.width || !rect.height) continue;
-    const dx = event.clientX < rect.left
-      ? rect.left - event.clientX
-      : event.clientX > rect.right
-        ? event.clientX - rect.right
+  if (isMath && glyphs) {
+    const bounds = node.getBoundingClientRect();
+    const hitMap = mathGlyphHitMaps.get(node);
+    for (const glyph of hitMap?.rects || []) {
+      const origin = bounds;
+      const rect = {
+        left: origin.left + glyph.rect.left,
+        right: origin.left + glyph.rect.right,
+        top: origin.top + glyph.rect.top,
+        bottom: origin.top + glyph.rect.bottom,
+        width: glyph.rect.width,
+        height: glyph.rect.height,
+      };
+      const dx = event.clientX < rect.left
+        ? rect.left - event.clientX
+        : event.clientX > rect.right
+          ? event.clientX - rect.right
         : 0;
-    const dy = event.clientY < rect.top
-      ? rect.top - event.clientY
-      : event.clientY > rect.bottom
-        ? event.clientY - rect.bottom
-        : 0;
-    const distance = dy * 1000 + dx;
-    if (!closestGlyph || distance < closestGlyph.distance) {
-      closestGlyph = { ...glyph, rect, distance };
+      const dy = event.clientY < rect.top
+        ? rect.top - event.clientY
+        : event.clientY > rect.bottom
+          ? event.clientY - rect.bottom
+          : 0;
+      const distance = dy * 1000 + dx;
+      if (!closestGlyph || distance < closestGlyph.distance) {
+        closestGlyph = { ...glyph, rect, distance };
+      }
     }
   }
   let sourceOffset;
@@ -692,6 +822,9 @@ const activateRange = (node, from, to, event) => {
   };
   diagnosticRecord({ kind: 'widget-dispatched', dispatchedAnchor: anchor });
   editorView.focus();
+  const elapsed = performance.now() - started;
+  recordSample(performanceStats.pointerSamples, elapsed);
+  performanceStats.lastPointerMs = elapsed;
 };
 
 const bindWidgetActivation = (node, from, to) => {
@@ -747,6 +880,21 @@ class MathWidget extends WidgetType {
       const fallback = document.createElement('code');
       fallback.textContent = this.source;
       node.appendChild(fallback);
+    }
+    if (node.querySelector('.katex-html')) {
+      node.__paperReaderGlyphMap = mapMathGlyphsToSource(
+        node,
+        mathSourceGlyphs(this.source, this.displayMode),
+      );
+      const prepareHitMap = () => {
+        if (node.isConnected && !mathGlyphHitMaps.has(node)) {
+          mathGlyphHitMaps.set(
+            node,
+            measureMathGlyphHitMap(node, node.__paperReaderGlyphMap),
+          );
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(prepareHitMap));
     }
     bindWidgetActivation(node, this.from, this.to);
     return node;
@@ -982,15 +1130,31 @@ class NoteAnchorWidget extends WidgetType {
   }
 }
 
-const collectDocumentBlocks = (state, tree, source) => {
+const collectDocumentBlocks = (state, tree, options = {}) => {
   const started = performance.now();
-  const blocks = [];
-  const codeNodes = syntaxNodes(tree, ['FencedCode']);
-  const tableNodes = syntaxNodes(tree, ['Table']);
-  const protectedRanges = [
-    ...syntaxNodes(tree, ['InlineCode', 'Blockquote', 'Table']),
-    ...codeNodes,
-  ];
+  const ranges = options.ranges || [{ from: 0, to: state.doc.length }];
+  performanceStats.lastBlockScanRanges = ranges.map((range) => ({ ...range }));
+  if (ranges.length === 1 && ranges[0].from === 0 && ranges[0].to === state.doc.length) {
+    performanceStats.fullSourceScans += 1;
+  }
+  const touchedOldRanges = [];
+  options.changes?.iterChangedRanges((fromA, toA) => touchedOldRanges.push({ from: fromA, to: toA }));
+  const blocks = options.previousBlocks
+    ? options.previousBlocks
+      .filter((block) => !touchedOldRanges.some((range) =>
+        range.from < block.to && range.to > block.from ||
+        range.from === range.to && range.from > block.from && range.from < block.to))
+      .map((block) => ({
+        ...block,
+        from: options.changes.mapPos(block.from, 1),
+        to: options.changes.mapPos(block.to, -1),
+      }))
+    : [];
+  const syntax = ranges.map((range) => syntaxNodesByName(tree, range.from, range.to));
+  const nodes = (name) => syntax.flatMap((groups) => groups.get(name));
+  const codeNodes = nodes('FencedCode');
+  const tableNodes = nodes('Table');
+  const protectedRanges = [...nodes('InlineCode'), ...nodes('Blockquote'), ...tableNodes, ...codeNodes];
 
   for (const node of codeNodes) {
     blocks.push(parseFencedCodeNode(state, node));
@@ -1000,19 +1164,22 @@ const collectDocumentBlocks = (state, tree, source) => {
     if (table) blocks.push(table);
   }
 
-  mathPattern.lastIndex = 0;
   let match;
-  while ((match = mathPattern.exec(source))) {
-    const raw = match[0];
-    const from = match.index + (raw.startsWith('\n') ? 1 : 0);
-    const to = match.index + raw.length;
-    const formula = match[2].trim();
-    if (formula && !rangeContains(protectedRanges, from, to)) {
-      blocks.push({ type: 'math', from, to, source: formula });
+  for (const range of ranges) {
+    const text = state.doc.sliceString(range.from, range.to);
+    mathPattern.lastIndex = 0;
+    while ((match = mathPattern.exec(text))) {
+      const raw = match[0];
+      const from = range.from + match.index + (raw.startsWith('\n') ? 1 : 0);
+      const to = range.from + match.index + raw.length;
+      const formula = match[2].trim();
+      if (formula && !rangeContains(protectedRanges, from, to) && !isInsideAnyBlock(blocks, from, to)) {
+        blocks.push({ type: 'math', from, to, source: formula });
+      }
     }
   }
-  for (const node of syntaxNodes(tree, ['Image'])) {
-    const raw = source.slice(node.from, node.to);
+  for (const node of nodes('Image')) {
+    const raw = state.doc.sliceString(node.from, node.to);
     imagePattern.lastIndex = 0;
     match = imagePattern.exec(raw);
     if (!match) continue;
@@ -1024,17 +1191,22 @@ const collectDocumentBlocks = (state, tree, source) => {
       url: match[2],
     });
   }
-  inlineMathPattern.lastIndex = 0;
-  while ((match = inlineMathPattern.exec(source))) {
-    const prefixLength = match[1].length;
-    const from = match.index + prefixLength;
-    const to = from + match[0].length - prefixLength;
-    if (!rangeContains(protectedRanges, from, to) &&
-      !blocks.some((block) => from < block.to && to > block.from)) {
-      blocks.push({ type: 'inlineMath', from, to, source: match[2].trim() });
+  blocks.sort((left, right) => left.from - right.from || left.to - right.to);
+  for (const range of ranges) {
+    const text = state.doc.sliceString(range.from, range.to);
+    inlineMathPattern.lastIndex = 0;
+    while ((match = inlineMathPattern.exec(text))) {
+      const prefixLength = match[1].length;
+      const from = range.from + match.index + prefixLength;
+      const to = from + match[0].length - prefixLength;
+      if (!rangeContains(protectedRanges, from, to) &&
+        !isInsideAnyBlock(blocks, from, to)) {
+        blocks.push({ type: 'inlineMath', from, to, source: match[2].trim() });
+      }
     }
   }
   performanceStats.blockScanMs = performance.now() - started;
+  recordSample(performanceStats.blockScanSamples, performanceStats.blockScanMs);
   performanceStats.maxBlockScanMs = Math.max(
     performanceStats.maxBlockScanMs,
     performanceStats.blockScanMs,
@@ -1042,93 +1214,174 @@ const collectDocumentBlocks = (state, tree, source) => {
   return blocks.sort((left, right) => left.from - right.from || left.to - right.to);
 };
 
-const parseDocument = (source, fragments) => {
+const changedDocumentRanges = (state, changes, previousBlocks, oldDoc) => {
+  const rawRanges = [];
+  changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    let from = state.doc.lineAt(fromB).from;
+    let to = state.doc.lineAt(Math.min(state.doc.length, toB)).to;
+    const affectedMath = previousBlocks.find((block) => {
+      return block.type === 'math' && (
+        fromA < block.to && toA > block.from ||
+        fromA === toA && fromA > block.from && fromA < block.to
+      );
+    });
+    if (affectedMath) {
+      from = Math.min(from, changes.mapPos(affectedMath.from, 1));
+      to = Math.max(to, changes.mapPos(affectedMath.to, -1));
+    } else if (/\$\$|\\\[|\\\]/.test(
+      `${oldDoc.sliceString(fromA, toA)}${state.doc.sliceString(fromB, toB)}`,
+    )) {
+      const startLine = state.doc.lineAt(from);
+      for (let number = startLine.number; number >= Math.max(1, startLine.number - 200); number -= 1) {
+        const line = state.doc.line(number);
+        if (/^[ \t]*(?:\$\$|\\\[)[ \t]*$/.test(line.text)) {
+          from = line.from;
+          break;
+        }
+      }
+      const endLine = state.doc.lineAt(to);
+      for (let number = endLine.number; number <= Math.min(state.doc.lines, endLine.number + 200); number += 1) {
+        const line = state.doc.line(number);
+        if (/^[ \t]*(?:\$\$|\\\])[ \t]*$/.test(line.text)) {
+          to = line.to;
+          break;
+        }
+      }
+    }
+    rawRanges.push({ from: Math.max(0, from - 1), to: Math.min(state.doc.length, to + 1) });
+  });
+  rawRanges.sort((left, right) => left.from - right.from);
+  const merged = [];
+  for (const range of rawRanges) {
+    const previous = merged[merged.length - 1];
+    if (previous && range.from <= previous.to) previous.to = Math.max(previous.to, range.to);
+    else merged.push({ ...range });
+  }
+  return merged;
+};
+
+const parseDocument = (state, budget = 8, upto = state.doc.length) => {
   const started = performance.now();
-  const tree = markdownLanguage.parser.parse(source, fragments);
+  const tree = ensureSyntaxTree(state, upto, budget) || syntaxTree(state);
   performanceStats.parseMs = performance.now() - started;
   performanceStats.maxParseMs = Math.max(performanceStats.maxParseMs, performanceStats.parseMs);
+  recordSample(performanceStats.parseSamples, performanceStats.parseMs);
   return tree;
 };
+
+const documentBlockDecoration = (block) => {
+  const widget = block.type === 'math'
+    ? new MathWidget(block.source, block.from, block.to, true)
+    : block.type === 'inlineMath'
+      ? new MathWidget(block.source, block.from, block.to, false)
+    : block.type === 'code'
+      ? new CodeBlockWidget(block.source, block.language, block.from, block.to)
+      : block.type === 'table'
+        ? new TableWidget(
+          block.headers,
+          block.alignments,
+          block.rows,
+          block.from,
+          block.to,
+        )
+        : new ImageWidget(block.alt, block.url, block.from, block.to);
+  return Decoration.replace({
+    widget,
+    block: block.type !== 'inlineMath',
+  }).range(block.from, block.to);
+};
+
+const shouldPreviewBlock = (state, block, editingBlock) =>
+  !intersectsSelection(state, block.from, block.to) &&
+  !(editingBlock && block.from === editingBlock.from && block.to === editingBlock.to);
 
 const buildDocumentBlockDecorations = (state, blocks, editingBlock) => {
   const decorations = [];
   for (const block of blocks) {
-    if (intersectsSelection(state, block.from, block.to) ||
-      (editingBlock && block.from === editingBlock.from && block.to === editingBlock.to)) continue;
-    const widget = block.type === 'math'
-      ? new MathWidget(block.source, block.from, block.to, true)
-      : block.type === 'inlineMath'
-        ? new MathWidget(block.source, block.from, block.to, false)
-      : block.type === 'code'
-        ? new CodeBlockWidget(block.source, block.language, block.from, block.to)
-        : block.type === 'table'
-          ? new TableWidget(
-            block.headers,
-            block.alignments,
-            block.rows,
-            block.from,
-            block.to,
-          )
-          : new ImageWidget(block.alt, block.url, block.from, block.to);
-    decorations.push(Decoration.replace({
-      widget,
-      block: block.type !== 'inlineMath',
-    }).range(block.from, block.to));
+    if (shouldPreviewBlock(state, block, editingBlock)) {
+      decorations.push(documentBlockDecoration(block));
+    }
   }
   performanceStats.documentBlocks = blocks.length;
   performanceStats.documentBlockTypes = blocks.reduce((counts, block) => ({
     ...counts,
     [block.type]: (counts[block.type] || 0) + 1,
   }), {});
-  const decorationSet = Decoration.set(decorations, true);
-  return {
-    decorations: decorationSet,
-    atomic: decorationSet,
-  };
+  return Decoration.set(decorations, true);
+};
+
+const updateDocumentBlockDecorations = (state, blocks, editingBlock, previous, ranges) => {
+  const relevant = ranges.filter((range) => range.to >= range.from);
+  if (!relevant.length) return previous;
+  const additions = [];
+  for (const block of blocks) {
+    if (relevant.some((range) => block.from <= range.to && block.to >= range.from) &&
+      shouldPreviewBlock(state, block, editingBlock)) {
+      additions.push(documentBlockDecoration(block));
+    }
+  }
+  return previous.update({
+    filter(from, to) {
+      return !relevant.some((range) => from <= range.to && to >= range.from);
+    },
+    add: additions,
+    sort: true,
+  });
 };
 
 const documentBlockPreview = StateField.define({
   create(state) {
-    const source = state.doc.toString();
-    const tree = parseDocument(source);
-    const blocks = collectDocumentBlocks(state, tree, source);
+    const tree = parseDocument(state, 40);
+    const blocks = syntaxTreeAvailable(state)
+      ? collectDocumentBlocks(state, tree)
+      : [];
     return {
       tree,
-      fragments: TreeFragment.addTree(tree),
       blocks,
       editingBlock: null,
-      ...buildDocumentBlockDecorations(state, blocks, null),
+      decorations: buildDocumentBlockDecorations(state, blocks, null),
     };
   },
   update(value, transaction) {
     const hasEditEffect = transaction.effects.some((effect) => effect.is(editingBlockUpdate));
-    if (!transaction.docChanged && !hasEditEffect) {
+    const hasIndexRefresh = transaction.effects.some((effect) => effect.is(blockIndexRefresh));
+    if (!transaction.docChanged && !hasEditEffect && !hasIndexRefresh) {
       if (!transaction.selection) return value;
       const oldSelection = transaction.startState.selection.main;
       const newSelection = transaction.state.selection.main;
-      if (![oldSelection, newSelection].some((selection) => value.blocks.some(
-        (block) => intersectsSelection({ selection: { main: selection } }, block.from, block.to),
-      ))) return value;
+      if (![oldSelection, newSelection].some((selection) =>
+        findOverlappingBlock(value.blocks, selection.from, selection.to)) && !value.editingBlock) return value;
     }
-    let { tree, fragments, blocks } = value;
+    let { tree, blocks } = value;
+    let refreshRanges = [];
     if (transaction.docChanged) {
-      const changes = [];
-      transaction.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
-        changes.push({ fromA, toA, fromB, toB });
+      const affectedRanges = changedDocumentRanges(
+        transaction.state,
+        transaction.changes,
+        blocks,
+        transaction.startState.doc,
+      );
+      refreshRanges = affectedRanges;
+      const parseTo = affectedRanges.reduce((to, range) => Math.max(to, range.to), 0);
+      tree = parseDocument(transaction.state, 8, parseTo);
+      blocks = collectDocumentBlocks(transaction.state, tree, {
+        ranges: affectedRanges,
+        previousBlocks: blocks,
+        changes: transaction.changes,
       });
-      const reusable = TreeFragment.applyChanges(fragments, changes);
-      const source = transaction.state.doc.toString();
-      tree = parseDocument(source, reusable);
-      fragments = TreeFragment.addTree(tree);
-      blocks = collectDocumentBlocks(transaction.state, tree, source);
+    } else if (hasIndexRefresh && syntaxTreeAvailable(transaction.state)) {
+      tree = syntaxTree(transaction.state);
+      blocks = collectDocumentBlocks(transaction.state, tree);
+      refreshRanges = [{ from: 0, to: transaction.state.doc.length }];
     }
     let editingBlock = value.editingBlock;
     if (transaction.docChanged && editingBlock) {
-      const from = transaction.changes.mapPos(editingBlock.from, -1);
-      const to = transaction.changes.mapPos(editingBlock.to, 1);
-      editingBlock = blocks.find((block) => block.from <= from && block.to >= to) || null;
+      const from = transaction.changes.mapPos(editingBlock.from, 1);
+      const to = transaction.changes.mapPos(editingBlock.to, -1);
+      editingBlock = findOverlappingBlock(blocks, from, to);
+      if (editingBlock && !(editingBlock.from <= from && editingBlock.to >= to)) editingBlock = null;
     }
-    if (editingBlock && transaction.selection && !sourcePointerDown &&
+    if (editingBlock && transaction.selection && !pointerGesture &&
       (transaction.state.selection.main.to < editingBlock.from ||
         transaction.state.selection.main.from > editingBlock.to)) {
       editingBlock = null;
@@ -1136,21 +1389,50 @@ const documentBlockPreview = StateField.define({
     for (const effect of transaction.effects) {
       if (effect.is(editingBlockUpdate)) {
         editingBlock = effect.value
-          ? blocks.find((block) =>
-            block.from === effect.value.from && block.to === effect.value.to)
+          ? findOverlappingBlock(blocks, effect.value.from, effect.value.to)
           : null;
+        if (editingBlock && (editingBlock.from !== effect.value.from || editingBlock.to !== effect.value.to)) {
+          editingBlock = null;
+        }
       }
     }
     if (!editingBlock && transaction.docChanged) {
-      editingBlock = blocks.find((block) => intersectsSelection(transaction.state, block.from, block.to)) || null;
+      const selection = transaction.state.selection.main;
+      editingBlock = findOverlappingBlock(blocks, selection.from, selection.to);
+      if (editingBlock && !intersectsSelection(transaction.state, editingBlock.from, editingBlock.to)) {
+        editingBlock = null;
+      }
     }
-    if (transaction.docChanged || transaction.selection || hasEditEffect) {
+    if (transaction.selection) {
+      for (const selection of [
+        transaction.startState.selection.main,
+        transaction.state.selection.main,
+      ]) {
+        const block = findOverlappingBlock(blocks, selection.from, selection.to);
+        if (block) refreshRanges.push({ from: block.from, to: block.to });
+      }
+    }
+    if (hasEditEffect) {
+      const effect = transaction.effects.find((item) => item.is(editingBlockUpdate));
+      const block = effect?.value && findOverlappingBlock(blocks, effect.value.from, effect.value.to);
+      if (block) refreshRanges.push({ from: block.from, to: block.to });
+      if (value.editingBlock) refreshRanges.push({ from: value.editingBlock.from, to: value.editingBlock.to });
+    }
+    if (value.editingBlock && editingBlock !== value.editingBlock) {
+      refreshRanges.push({ from: value.editingBlock.from, to: value.editingBlock.to });
+    }
+    if (transaction.docChanged || transaction.selection || hasEditEffect || hasIndexRefresh) {
       return {
         tree,
-        fragments,
         blocks,
         editingBlock,
-        ...buildDocumentBlockDecorations(transaction.state, blocks, editingBlock),
+        decorations: updateDocumentBlockDecorations(
+          transaction.state,
+          blocks,
+          editingBlock,
+          transaction.docChanged ? value.decorations.map(transaction.changes) : value.decorations,
+          refreshRanges,
+        ),
       };
     }
     return value;
@@ -1234,7 +1516,7 @@ const buildVisibleDecorations = (view) => {
       if (match[1].toLowerCase() !== match[3].toLowerCase()) continue;
       const from = range.from + match.index;
       const to = from + match[0].length;
-      if (documentBlocks.some((block) => from >= block.from && to <= block.to)) continue;
+      if (isInsideAnyBlock(documentBlocks, from, to)) continue;
       if (!cursorInside({ from, to })) {
         decorations.push(Decoration.replace({
           widget: new ScriptWidget(
@@ -1289,6 +1571,7 @@ const buildVisibleDecorations = (view) => {
   );
   performanceStats.renderedWidgets = decorations.length;
   performanceStats.lastUpdateMs = performance.now() - started;
+  recordSample(performanceStats.updateSamples, performanceStats.lastUpdateMs);
   performanceStats.maxUpdateMs = Math.max(
     performanceStats.maxUpdateMs,
     performanceStats.lastUpdateMs,
@@ -1299,10 +1582,37 @@ const buildVisibleDecorations = (view) => {
 const livePreview = ViewPlugin.fromClass(
   class {
     constructor(view) {
+      this.editorView = view;
       this.decorations = buildVisibleDecorations(view);
+      this.parseFrame = 0;
+      this.cancelParseSchedule = null;
+      this.scheduleParseCompletion(view);
+    }
+
+    scheduleParseCompletion(view) {
+      this.cancelParseSchedule?.();
+      if (syntaxTreeAvailable(view.state)) return;
+      const run = () => {
+        this.cancelParseSchedule = null;
+        if (this.destroyed || view !== this.editorView) return;
+        ensureSyntaxTree(view.state, view.state.doc.length, 8);
+        if (syntaxTreeAvailable(view.state)) {
+          view.dispatch({ effects: blockIndexRefresh.of(null) });
+        } else {
+          this.scheduleParseCompletion(view);
+        }
+      };
+      if (typeof requestIdleCallback === 'function') {
+        const handle = requestIdleCallback(run, { timeout: 100 });
+        this.cancelParseSchedule = () => cancelIdleCallback(handle);
+      } else {
+        const handle = setTimeout(run, 20);
+        this.cancelParseSchedule = () => clearTimeout(handle);
+      }
     }
 
     update(update) {
+      this.editorView = update.view;
       performanceStats.updates += 1;
       if (update.docChanged) performanceStats.documentChanges += 1;
       if (
@@ -1317,6 +1627,12 @@ const livePreview = ViewPlugin.fromClass(
       ) {
         this.decorations = buildVisibleDecorations(update.view);
       }
+      if (update.docChanged) this.scheduleParseCompletion(update.view);
+    }
+
+    destroy() {
+      this.destroyed = true;
+      this.cancelParseSchedule?.();
     }
   },
   { decorations: (value) => value.decorations },
@@ -1330,8 +1646,7 @@ const fontPanel = document.getElementById('paper-reader-font-panel');
 const tablePanel = document.getElementById('paper-reader-table-panel');
 const defaultFontSizes = { body: 14, inlineMath: 15, displayMath: 18 };
 let view;
-let sourcePointerDown = null;
-let sourcePointerDragged = false;
+let pointerGesture = null;
 let pendingSelection = null;
 let saveTimer = 0;
 let outlineTimer = 0;
@@ -1733,34 +2048,79 @@ const createView = (payload) => {
     window.addEventListener(type, (event) => diagnosticEvent(event, 'capture'), true);
     window.addEventListener(type, (event) => diagnosticEvent(event, 'bubble'), false);
   }
-  view.dom.addEventListener('mousedown', (event) => {
-    sourcePointerDown = { x: event.clientX, y: event.clientY };
-    sourcePointerDragged = false;
-    if (event.button !== 0 || !(event.target instanceof Element)) return;
-    const node = event.target.closest(
+  const beginPointerGesture = (event, pointerId = event.pointerId ?? 'mouse') => {
+    const target = event.target instanceof Element ? event.target : null;
+    const widgetNode = target?.closest(
       '.paper-reader-cm-math, .paper-reader-cm-inline-math, ' +
       '.paper-reader-cm-image, .paper-reader-cm-table, ' +
       '.paper-reader-cm-code-block, .paper-reader-cm-script',
     );
+    const isCompatibilityMouseEvent = event.type === 'mousedown' &&
+      pointerGesture && pointerGesture.pointerId !== 'mouse' &&
+      Math.abs(event.clientX - pointerGesture.x) <= 1 &&
+      Math.abs(event.clientY - pointerGesture.y) <= 1;
+    if (!isCompatibilityMouseEvent) {
+      pointerGesture = {
+        x: event.clientX,
+        y: event.clientY,
+        dragged: false,
+        pointerId,
+        // CodeMirror may change decorations during mousedown, before click fires.
+        sourcePosition: !widgetNode && event.target instanceof Node && view.contentDOM.contains(event.target)
+          ? sourcePositionAtPoint(view, event)
+          : null,
+        widgetNode,
+      };
+    }
+    if (event.button !== 0) return;
+    if (event.type === 'mousedown' && Number.isInteger(pointerGesture.sourcePosition) &&
+      !pointerGesture.widgetNode) {
+      event.preventDefault();
+    }
+    const node = pointerGesture.widgetNode;
     if (!node || !view.dom.contains(node)) return;
     const from = Number(node.dataset.from);
     const to = Number(node.dataset.to);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return;
     event.preventDefault();
     event.stopPropagation();
-  }, true);
-  view.dom.addEventListener('mousemove', (event) => {
-    if (sourcePointerDown &&
-      (Math.abs(event.clientX - sourcePointerDown.x) > 3 ||
-        Math.abs(event.clientY - sourcePointerDown.y) > 3)) {
-      sourcePointerDragged = true;
+  };
+  const updatePointerGesture = (event, pointerId = event.pointerId ?? 'mouse') => {
+    if (!pointerGesture || pointerGesture.pointerId !== pointerId) return;
+    if (!pointerGesture.dragged &&
+      (Math.abs(event.clientX - pointerGesture.x) > 3 ||
+        Math.abs(event.clientY - pointerGesture.y) > 3)) {
+      pointerGesture.dragged = true;
     }
-  }, true);
-  view.dom.addEventListener('mouseup', () => {
-    if (!sourcePointerDragged) return;
+    if (!pointerGesture.dragged || !Number.isInteger(pointerGesture.sourcePosition)) return;
+    const head = sourcePositionAtPoint(view, event);
+    if (!Number.isInteger(head)) return;
+    pointerGesture.selectionHead = head;
+    view.dispatch({
+      selection: { anchor: pointerGesture.sourcePosition, head },
+      scrollIntoView: false,
+    });
+  };
+  const finishPointerGesture = (event) => {
+    if (!pointerGesture?.dragged) {
+      const gesture = pointerGesture;
+      setTimeout(() => {
+        if (pointerGesture === gesture) pointerGesture = null;
+      }, 500);
+      return;
+    }
+    if (Number.isInteger(pointerGesture.sourcePosition) && event) {
+      const head = sourcePositionAtPoint(view, event);
+      if (Number.isInteger(head)) {
+        pointerGesture.selectionHead = head;
+        view.dispatch({
+          selection: { anchor: pointerGesture.sourcePosition, head },
+          scrollIntoView: false,
+        });
+      }
+    }
     setTimeout(() => {
-      sourcePointerDown = null;
-      sourcePointerDragged = false;
+      pointerGesture = null;
       const editingBlock = view?.state.field(documentBlockPreview).editingBlock;
       const selection = view?.state.selection.main;
       if (editingBlock && selection &&
@@ -1768,35 +2128,48 @@ const createView = (payload) => {
         view.dispatch({ effects: editingBlockUpdate.of(null) });
       }
     }, 0);
-  }, true);
+  };
+  view.dom.addEventListener('pointerdown', (event) => beginPointerGesture(event), true);
+  view.dom.addEventListener('mousedown', (event) => beginPointerGesture(event, 'mouse'), true);
+  view.dom.addEventListener('pointermove', (event) => updatePointerGesture(event), true);
+  view.dom.addEventListener('mousemove', (event) => updatePointerGesture(event, 'mouse'), true);
+  view.dom.addEventListener('pointerup', finishPointerGesture, true);
+  view.dom.addEventListener('mouseup', finishPointerGesture, true);
+  view.dom.addEventListener('pointercancel', () => { pointerGesture = null; }, true);
   view.dom.addEventListener('click', (event) => {
     if (event.button !== 0 || !(event.target instanceof Element)) return;
-    const node = event.target.closest(
-      '.paper-reader-cm-math, .paper-reader-cm-inline-math, ' +
-      '.paper-reader-cm-image, .paper-reader-cm-table, ' +
-      '.paper-reader-cm-code-block, .paper-reader-cm-script',
-    );
+    // A source mousedown can be retargeted to a freshly mounted preview widget
+    // before click dispatch. The frozen source position owns that gesture.
+    if (Number.isInteger(pointerGesture?.sourcePosition)) return;
+    const node = pointerGesture?.widgetNode || null;
     if (!node || !view.dom.contains(node)) return;
     const from = Number(node.dataset.from);
     const to = Number(node.dataset.to);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    sourcePointerDown = null;
-    sourcePointerDragged = false;
+    pointerGesture = null;
     activateRange(node, from, to, event);
   }, true);
   view.dom.addEventListener('click', (event) => {
-    const dragged = sourcePointerDragged;
-    sourcePointerDown = null;
-    sourcePointerDragged = false;
-    if (dragged || !view.contentDOM.contains(event.target)) return;
-    const position = sourcePositionAtPoint(view, event);
+    const dragged = pointerGesture?.dragged || false;
+    const pointerPosition = pointerGesture?.sourcePosition;
+    pointerGesture = null;
+    if (dragged || (!Number.isInteger(pointerPosition) && !view.contentDOM.contains(event.target))) {
+      return;
+    }
+    const started = performance.now();
+    const position = Number.isInteger(pointerPosition)
+      ? pointerPosition
+      : sourcePositionAtPoint(view, event);
     if (position === null) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     view.dispatch({ selection: { anchor: position }, scrollIntoView: false });
     view.focus();
+    const elapsed = performance.now() - started;
+    recordSample(performanceStats.pointerSamples, elapsed);
+    performanceStats.lastPointerMs = elapsed;
   }, true);
   view.dom.addEventListener('contextmenu', showMenu);
   document.addEventListener('click', (event) => {

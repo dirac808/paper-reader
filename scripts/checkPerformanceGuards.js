@@ -47,6 +47,10 @@ assert.ok(
 );
 assert.ok(markdownEditor.includes("const sourcePositionAtPoint = (editorView, event) =>"));
 assert.ok(markdownEditor.includes("view.dom.addEventListener('click'"));
+assert.ok(markdownEditor.includes("recordSample(performanceStats.pointerSamples"));
+assert.ok(markdownEditor.includes("mathGlyphHitMaps.get(node)"));
+assert.ok(markdownEditor.includes("mathSourceGlyphCache"));
+assert.ok(markdownEditor.includes("requestAnimationFrame(() => requestAnimationFrame(prepareHitMap))"));
 assert.ok(
   !markdownEditor.includes("doc.toString()") ||
     markdownEditor.includes("selectionAnchor")
@@ -68,8 +72,11 @@ assert.ok(markdownEditor.includes("searchKeymap"));
 assert.ok(markdownEditor.includes("paper-reader-cm-math--tagged"));
 assert.ok(markdownEditor.includes("class TableWidget"));
 assert.ok(markdownStyles.includes("paper-reader-cm-table"));
-assert.ok(markdownEditor.includes("markdownLanguage.parser.parse(source, fragments)"));
-assert.ok(markdownEditor.includes("TreeFragment.applyChanges"));
+assert.ok(markdownEditor.includes("syntaxTree(state)"));
+assert.ok(markdownEditor.includes("ensureSyntaxTree"));
+assert.ok(markdownEditor.includes("syntaxTreeAvailable"));
+assert.ok(!markdownEditor.includes("TreeFragment"));
+assert.ok(!markdownEditor.includes("markdownLanguage.parser.parse"));
 assert.ok(!markdownEditor.includes("EditorView.atomicRanges.of"));
 assert.ok(!markdownEditor.includes("y: rect.top + rect.height / 2"));
 assert.ok(!markdownEditor.includes("pointerSelectingHeading"));
