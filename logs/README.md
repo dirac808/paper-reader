@@ -100,4 +100,4 @@ npm run test:markdown-selection
 - 目标稳定版：`1.5.0`
 - 核心变化：CodeMirror 单一解析来源、局部索引更新、精确 pointer/caret 映射、可拖动选择、KaTeX hit map 缓存和性能守卫。
 - CachyOS 主机 `dell` 的 VS Code 1.138.0 已从生成的 VSIX 安装并核验 `paper-reader-lab.paper-reader@1.5.0`。
-- GitHub Release：发布完成后补入实际 Release URL。
+- GitHub Release：https://github.com/dirac808/paper-reader/releases/tag/v1.5.0（附带 `paper-reader-1.5.0.vsix`）。
