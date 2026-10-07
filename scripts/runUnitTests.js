@@ -432,6 +432,7 @@ async function main() {
   testBoundedProcessLog();
   await testTranslationCancellation();
   testNormalizeMarkdownMathDelimiters();
+  require("./tableModel.test.js");
   console.log("Unit tests passed.");
 }
 

@@ -681,6 +681,49 @@ async function main() {
       url: `http://127.0.0.1:${server.address().port}/index.html`,
     });
     await delay(500);
+    const assertFullWidthEditingSurface = async (content, label) => {
+      await evaluate(client,
+        `window.postMessage({type:'update',content:${JSON.stringify(content)}},'*')`);
+      await delay(180);
+      const metrics = await evaluate(client, `(() => {
+        const editor = document.querySelector('#paper-reader-editor .cm-editor');
+        const contentNode = document.querySelector('#paper-reader-editor .cm-content');
+        const line = document.querySelector('#paper-reader-editor .cm-line');
+        const shell = document.querySelector('#paper-reader-shell');
+        const workspace = document.querySelector('#paper-reader-workspace');
+        const editorRoot = document.querySelector('#paper-reader-editor');
+        const editorRect = editor?.getBoundingClientRect();
+        const contentRect = contentNode?.getBoundingClientRect();
+        const lineRect = line?.getBoundingClientRect();
+        const shellRect = shell?.getBoundingClientRect();
+        const workspaceRect = workspace?.getBoundingClientRect();
+        const rootRect = editorRoot?.getBoundingClientRect();
+        const editorStyle = editorRoot && getComputedStyle(editorRoot);
+        const cmStyle = editor && getComputedStyle(editor);
+        return {
+          label: ${JSON.stringify(label)},
+          viewportWidth: window.innerWidth,
+          shellWidth: shellRect?.width || 0,
+          workspaceWidth: workspaceRect?.width || 0,
+          rootWidth: rootRect?.width || 0,
+          rootDisplay: editorStyle?.display,
+          rootGridColumn: editorStyle?.gridColumn,
+          rootWidthStyle: editorStyle?.width,
+          cmWidthStyle: cmStyle?.width,
+          workspaceColumns: getComputedStyle(workspace).gridTemplateColumns,
+          editorWidth: editorRect?.width || 0,
+          contentWidth: contentRect?.width || 0,
+          lineWidth: lineRect?.width || 0,
+          lineHeight: lineRect?.height || 0,
+        };
+      })()`);
+      assert.ok(metrics.editorWidth > 0 && metrics.lineHeight > 0, JSON.stringify(metrics));
+      assert.ok(metrics.contentWidth >= metrics.editorWidth * 0.95,
+        `CodeMirror content is narrower than its editor: ${JSON.stringify(metrics)}`);
+      assert.ok(metrics.lineWidth >= metrics.contentWidth - 64,
+        `CodeMirror editing line is narrower than its content surface: ${JSON.stringify(metrics)}`);
+      return metrics;
+    };
     const longDocument = process.env.HEADING_SELECTION_LONG === "true";
     const headingLevel = Math.min(
       6,
@@ -707,6 +750,12 @@ async function main() {
       })}},'*')`
     );
     await delay(300);
+    const emptySurface = await assertFullWidthEditingSurface('', 'empty');
+    const filledSurface = await assertFullWidthEditingSurface(
+      'x'.repeat(2400), 'long single paragraph');
+    await evaluate(client,
+      `window.postMessage({type:'update',content:${JSON.stringify(documentContent)}},'*')`);
+    await delay(220);
     if (process.env.MARKDOWN_CURSOR_REGRESSION === 'true') {
       const cursorFixture = [
         'Body text with several characters to place the caret precisely.',
@@ -1023,6 +1072,7 @@ async function main() {
         fixture: fixturePath,
         equationFour: results,
         sourceClickBeforeTag: { ...sourcePoint, caret: sourceCaret },
+        layout: { emptySurface, filledSurface },
       }));
       return;
     }
@@ -1549,21 +1599,25 @@ async function main() {
         quoteDragSelection.text.includes('Quoted text'),
         `Quote drag did not select the quote text: ${JSON.stringify(quoteDragSelection)}`
       );
-      await clickElement(client, '.paper-reader-cm-table');
+      await clickElement(client, '.paper-reader-cm-table td:last-child');
       const tableSelection = await evaluate(
         client,
         `({
           from: window.paperReaderMarkdownPerformance?.selectionFrom,
           to: window.paperReaderMarkdownPerformance?.selectionTo,
           content: window.paperReaderMarkdownPerformance?.documentText,
+          editingBlock: window.paperReaderMarkdownPerformance?.editingBlock,
+          tables: document.querySelectorAll('.paper-reader-cm-table').length,
+          activeInsideCell: !!document.activeElement?.closest?.('.paper-reader-cm-cell'),
         })`
       );
-      assert.strictEqual(tableSelection.to, tableSelection.from);
-      assert.ok(
-        tableSelection.from >= documentContent.indexOf('| Column | Value |') &&
-        tableSelection.from < documentContent.length,
-        `Table click placed the caret outside its source: ${JSON.stringify(tableSelection)}`
-      );
+      // The caret now lives in the cell, so the editor selection is intentionally untouched.
+      assert.strictEqual(tableSelection.editingBlock, null,
+        `Clicking a table cell must not switch the table to source mode: ${JSON.stringify(tableSelection)}`);
+      assert.strictEqual(tableSelection.tables, 1,
+        `Clicking a table cell must keep the table rendered: ${JSON.stringify(tableSelection)}`);
+      assert.strictEqual(tableSelection.activeInsideCell, true,
+        `Clicking a table cell must focus the cell: ${JSON.stringify(tableSelection)}`);
       assert.ok(tableSelection.content.includes('| Column | Value |'));
       await evaluate(
         client,
@@ -1708,6 +1762,28 @@ async function main() {
       })()`
     );
     assert.strictEqual(result.selectedText, "Heading title");
+
+    // The ATX marker is a rendering detail: `##` must not be painted, but it must still be in
+    // the document and reappear in the source when the file is saved.
+    const marker = await evaluate(
+      client,
+      `(() => {
+        const line = [...document.querySelectorAll('.cm-line')]
+          .find((item) => item.textContent.includes('Heading title'));
+        return {
+          painted: line ? line.textContent : null,
+          source: window.paperReaderMarkdownPerformance.documentText,
+          headingClass: line ? line.className : null,
+        };
+      })()`
+    );
+    assert.ok(marker.painted && !marker.painted.includes('#'),
+      `The heading marker must not be painted: ${JSON.stringify(marker)}`);
+    assert.ok(marker.headingClass && marker.headingClass.includes('paper-reader-cm-heading-'),
+      `The heading line must keep its heading styling: ${JSON.stringify(marker)}`);
+    assert.ok(marker.source.includes('Heading title') &&
+      /^#{1,6} Heading title$/m.test(marker.source),
+      `The heading marker must stay in the document source: ${JSON.stringify(marker.source.slice(0, 200))}`);
     assert.ok(
       Math.abs(result.lineTop - geometry.lineTop) < 1,
       `Heading moved vertically during selection: ${geometry.lineTop} -> ${result.lineTop}`
@@ -1984,6 +2060,206 @@ async function main() {
     );
     await evaluate(
       client,
+      `window.postMessage({type:'update',content:''},'*')`
+    );
+    await delay(100);
+    await clickElement(client, '[data-command="bold"]');
+    await delay(100);
+    const boldPreview = await evaluate(
+      client,
+      `({
+        content: window.paperReaderMarkdownPerformance?.documentText,
+        html: document.querySelector('.cm-line')?.innerHTML,
+        hiddenMarkers: [...document.querySelectorAll('.cm-line .paper-reader-cm-mark-hidden')]
+          .map((node) => node.textContent)
+          .join(''),
+        strongTextWeight: (() => {
+          const line = document.querySelector('.cm-line');
+          const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+          let node;
+          while ((node = walker.nextNode())) {
+            if (node.data !== 'text') continue;
+            return Number.parseInt(getComputedStyle(node.parentElement).fontWeight, 10);
+          }
+          return 0;
+        })(),
+      })`
+    );
+    assert.strictEqual(boldPreview.content, '**text**');
+    assert.deepStrictEqual(
+      boldPreview.hiddenMarkers,
+      '****',
+      `Bold Markdown markers should remain in source but hidden in the editor: ${JSON.stringify(boldPreview)}`
+    );
+    assert.ok(
+      boldPreview.strongTextWeight >= 600,
+      `Bold formatting should visually emphasize text: ${JSON.stringify(boldPreview)}`
+    );
+
+    await evaluate(
+      client,
+      `window.postMessage({type:'update',content:'selected text'},'*')`
+    );
+    await delay(140);
+    const boldSelectionPoints = await evaluate(client, `(() => {
+      const line = document.querySelector('.cm-line');
+      const node = line?.firstChild;
+      if (!node || node.nodeType !== Node.TEXT_NODE) return null;
+      const start = document.createRange();
+      start.setStart(node, 0);
+      start.setEnd(node, 1);
+      const end = document.createRange();
+      end.setStart(node, node.data.length - 1);
+      end.setEnd(node, node.data.length);
+      const a = start.getBoundingClientRect();
+      const b = end.getBoundingClientRect();
+      return {
+        start: { x: a.left + a.width / 2, y: a.top + a.height / 2 },
+        end: { x: b.right + 2, y: b.top + b.height / 2 },
+      };
+    })()`);
+    assert.ok(boldSelectionPoints, 'Could not locate text for the toolbar bold selection test');
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', ...boldSelectionPoints.start,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', ...boldSelectionPoints.end,
+      button: 'left', buttons: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', ...boldSelectionPoints.end,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+    await delay(40);
+    const selectedBeforeBold = await evaluate(client, `({
+      from: window.paperReaderMarkdownPerformance?.selectionFrom,
+      to: window.paperReaderMarkdownPerformance?.selectionTo,
+      text: window.paperReaderMarkdownPerformance?.selectionText,
+    })`);
+    assert.ok(selectedBeforeBold.to > selectedBeforeBold.from,
+      `Toolbar bold test did not create a selection: ${JSON.stringify(selectedBeforeBold)}`);
+    await clickElement(client, '[data-command="bold"]');
+    await delay(140);
+    const toolbarBoldState = await evaluate(client, `(() => ({
+      content: window.paperReaderMarkdownPerformance?.documentText,
+      html: document.querySelector('.cm-line')?.innerHTML,
+      visibleStars: [...document.querySelectorAll('.cm-line *')]
+        .filter((node) => node.textContent === '**' &&
+          !node.closest('.paper-reader-cm-mark-hidden'))
+        .map((node) => node.textContent),
+    }))()`);
+    assert.strictEqual(toolbarBoldState.content, '**selected text**');
+    assert.deepStrictEqual(toolbarBoldState.visibleStars, [],
+      `Toolbar bold markers remained visible: ${JSON.stringify(toolbarBoldState)}`);
+
+    await evaluate(
+      client,
+      `window.postMessage({type:'update',content:'xxxxxx**xxxxx**'},'*')`
+    );
+    await delay(140);
+    const existingBoldState = await evaluate(client, `(() => {
+      const line = document.querySelector('.cm-line');
+      const markerNodes = [...line.querySelectorAll('.paper-reader-cm-mark-hidden')]
+        .filter((node) => node.textContent.includes('*'));
+      const visibleStars = [...line.querySelectorAll('.cm-content *, .cm-line')]
+        .filter((node) => node.textContent === '**' &&
+          !node.closest('.paper-reader-cm-mark-hidden') &&
+          getComputedStyle(node).color !== 'rgba(0, 0, 0, 0)' &&
+          getComputedStyle(node).color !== 'transparent')
+        .map((node) => ({ text: node.textContent, tag: node.tagName, className: node.className,
+          color: getComputedStyle(node).color }));
+      const hiddenMarkerColors = [...line.querySelectorAll('.paper-reader-cm-mark-hidden *')]
+        .filter((node) => node.textContent === '**')
+        .map((node) => getComputedStyle(node).color);
+      const hiddenMarkerWidths = [...line.querySelectorAll('.paper-reader-cm-mark-hidden')]
+        .map((node) => node.getBoundingClientRect().width);
+      return {
+        text: line?.textContent,
+        html: line?.innerHTML,
+        hiddenMarkerText: markerNodes.map((node) => node.textContent).join(''),
+        hiddenMarkerCount: markerNodes.length,
+        visibleStars,
+        hiddenMarkerColors,
+        hiddenMarkerWidths,
+      };
+    })()`);
+    assert.strictEqual(existingBoldState.text, 'xxxxxx**xxxxx**');
+    assert.strictEqual(existingBoldState.hiddenMarkerText, '****');
+    assert.ok(existingBoldState.hiddenMarkerCount >= 1);
+    assert.ok(
+      existingBoldState.hiddenMarkerColors.length > 0 &&
+        existingBoldState.hiddenMarkerColors.every((color) =>
+          color === 'rgba(0, 0, 0, 0)' || color === 'transparent'),
+      `Bold marker syntax highlight overrode hidden color: ${JSON.stringify(existingBoldState)}`
+    );
+    assert.ok(
+      existingBoldState.hiddenMarkerWidths.length > 0 &&
+        existingBoldState.hiddenMarkerWidths.every((width) => width <= 0.01),
+      `Bold markers still occupy layout width: ${JSON.stringify(existingBoldState)}`
+    );
+    assert.deepStrictEqual(
+      existingBoldState.visibleStars,
+      [],
+      `Existing bold markers remained visible: ${JSON.stringify(existingBoldState)}`
+    );
+
+    await evaluate(
+      client,
+      `window.postMessage({type:'update',content:'## Heading'},'*')`
+    );
+    await delay(100);
+    const headingEnd = await evaluate(client, `(() => {
+      const line = [...document.querySelectorAll('.cm-line')]
+        .find((item) => item.textContent.includes('Heading'));
+      if (!line) return null;
+      const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        const offset = node.data.indexOf('Heading');
+        if (offset < 0) continue;
+        const range = document.createRange();
+        range.setStart(node, offset + 'Heading'.length - 1);
+        range.setEnd(node, offset + 'Heading'.length);
+        const rect = range.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      }
+      return null;
+    })()`);
+    assert.ok(headingEnd, 'Could not locate heading text for the empty-heading Backspace test');
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: headingEnd.x, y: headingEnd.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: headingEnd.x, y: headingEnd.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'End', code: 'End' });
+    await client.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'End', code: 'End' });
+    const pressBackspace = async () => {
+      await client.send('Input.dispatchKeyEvent', {
+        type: 'keyDown', key: 'Backspace', code: 'Backspace',
+      });
+      await client.send('Input.dispatchKeyEvent', {
+        type: 'keyUp', key: 'Backspace', code: 'Backspace',
+      });
+    };
+    for (let index = 0; index < 'Heading'.length; index += 1) await pressBackspace();
+    assert.strictEqual(
+      await evaluate(client, 'window.paperReaderMarkdownPerformance?.documentText'),
+      '## ',
+      'Deleting heading text should leave an empty heading before the final Backspace'
+    );
+    await pressBackspace();
+    assert.strictEqual(
+      await evaluate(client, 'window.paperReaderMarkdownPerformance?.documentText'),
+      '',
+      'Backspace on an empty heading should clear its marker instead of exposing a bare #'
+    );
+
+    await evaluate(
+      client,
       `window.postMessage({type:'update',content:${JSON.stringify(
         'Before\n\n$$\nx+y\n$$\n\nAfter\n\n`code`\n\n```js\nconst value = 1;\n```\n'
       )}},'*')`
@@ -2185,52 +2461,510 @@ async function main() {
     );
     assert.ok(insertedTableSource.includes('| Column 1 | Column 2 | Column 3 |'));
     assert.strictEqual((insertedTableSource.match(/\n\| Value/g) || []).length, 4);
-    await client.send("Input.dispatchKeyEvent", {
-      type: "keyDown",
-      key: "ArrowUp",
-      code: "ArrowUp",
-    });
-    await client.send("Input.dispatchKeyEvent", {
-      type: "keyUp",
-      key: "ArrowUp",
-      code: "ArrowUp",
-    });
-    assert.strictEqual(
-      await evaluate(client, `document.querySelectorAll('.paper-reader-cm-table').length`),
-      0,
-      'ArrowUp unexpectedly rendered the table while its source was active'
-    );
-    const paragraphPoint = await evaluate(
-      client,
-      `(() => {
-        const line = [...document.querySelectorAll('.cm-line')]
-          .find((item) => item.textContent.includes('Intro paragraph'));
-        const rect = line.getBoundingClientRect();
-        return { x: rect.left + 8, y: rect.top + rect.height / 2 };
-      })()`
-    );
-    await client.send("Input.dispatchMouseEvent", {
-      type: "mousePressed",
-      x: paragraphPoint.x,
-      y: paragraphPoint.y,
-      button: "left",
-      buttons: 1,
-      clickCount: 1,
-    });
-    await client.send("Input.dispatchMouseEvent", {
-      type: "mouseReleased",
-      x: paragraphPoint.x,
-      y: paragraphPoint.y,
-      button: "left",
-      buttons: 0,
-      clickCount: 1,
-    });
-    await delay(100);
     assert.strictEqual(
       await evaluate(client, `document.querySelectorAll('.paper-reader-cm-table').length`),
       1,
-      'Inserted table did not switch to table preview after leaving the source selection'
+      'An inserted table must render as a table right after insertion'
     );
+
+    const mouseMove = (target, x, y) => target.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    // Regression: live table editing. Clicking a cell, selecting inside it and typing must
+    // never collapse the table back into Markdown source.
+    await delay(60);
+    const tableCells = await evaluate(client, `(() => {
+      const cells = document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell');
+      return [...cells].map((cell) => cell.textContent);
+    })()`);
+    assert.strictEqual(tableCells.length, 15, JSON.stringify(tableCells));
+    const bodyCellPoint = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:last-child .paper-reader-cm-cell');
+      const rect = cell.getBoundingClientRect();
+      return { x: rect.right - 12, y: rect.top + rect.height / 2 };
+    })()`);
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: bodyCellPoint.x, y: bodyCellPoint.y,
+      button: "left", buttons: 1, clickCount: 1,
+    });
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: bodyCellPoint.x, y: bodyCellPoint.y,
+      button: "left", buttons: 0, clickCount: 1,
+    });
+    await delay(60);
+    const clickedCell = await evaluate(client, `({
+      activeInsideCell: !!document.activeElement?.closest?.('.paper-reader-cm-cell'),
+      activeText: document.activeElement?.textContent,
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      editingBlock: window.paperReaderMarkdownPerformance?.editingBlock,
+      selectedRow: window.paperReaderMarkdownPerformance?.lastWidgetActivation?.tableCell || null,
+      caretOffset: (() => {
+        const selection = window.getSelection();
+        return selection && selection.anchorNode ? selection.anchorOffset : null;
+      })(),
+    })`);
+    assert.strictEqual(clickedCell.activeInsideCell, true,
+      `Clicking a table cell must focus the cell: ${JSON.stringify(clickedCell)}`);
+    assert.strictEqual(clickedCell.tables, 1,
+      `Clicking a table cell must keep the table rendered: ${JSON.stringify(clickedCell)}`);
+    assert.strictEqual(clickedCell.editingBlock, null,
+      `Clicking a table cell must not enter source mode: ${JSON.stringify(clickedCell)}`);
+    assert.ok(clickedCell.selectedRow, `Table cell hit-testing lost its mapping: ${JSON.stringify(clickedCell)}`);
+    // The click lands inside "Value", so the caret must land near the clicked character
+    // instead of snapping to the start of the cell.
+    assert.ok(clickedCell.caretOffset > 0,
+      `Clicking inside a cell must place the caret at the click point: ${JSON.stringify(clickedCell)}`);
+    assert.ok((clickedCell.activeText || '').length > 3 && clickedCell.caretOffset <= (clickedCell.activeText || '').length,
+      `Caret offset escaped the cell text: ${JSON.stringify(clickedCell)}`);
+    await delay(120);
+    await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:last-child .paper-reader-cm-cell');
+      const rect = cell.getBoundingClientRect();
+      window.__caretDragTarget = {
+        startX: rect.left + 3,
+        endX: rect.right - 3,
+        y: rect.bottom - 3,
+      };
+    })()`);
+    const caretDrag = await evaluate(client, `(() => {
+      const target = window.__caretDragTarget;
+      const at = (x, y) => {
+        const element = document.elementFromPoint(x, y);
+        return element ? String(element.className || element.nodeName).slice(0, 40) : 'none';
+      };
+      return {
+        ...target,
+        startHit: at(target.startX, target.y),
+        endHit: at(target.endX, target.y),
+        activeBefore: (document.activeElement && document.activeElement.className) || null,
+      };
+    })()`);
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: caretDrag.startX, y: caretDrag.y,
+    });
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mousePressed", x: caretDrag.startX, y: caretDrag.y,
+      button: "left", buttons: 1, clickCount: 1,
+    });
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: caretDrag.endX, y: caretDrag.y,
+      button: "left", buttons: 1,
+    });
+    await client.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x: caretDrag.endX, y: caretDrag.y,
+      button: "left", buttons: 0, clickCount: 1,
+    });
+    await delay(80);
+    const draggedSelection = await evaluate(client, `(() => {
+      const selection = window.getSelection();
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:last-child .paper-reader-cm-cell');
+      return {
+        text: selection?.toString() || '',
+        rangeCount: selection?.rangeCount ?? null,
+        collapsed: selection?.isCollapsed ?? null,
+        anchorOffset: selection?.anchorOffset ?? null,
+        focusOffset: selection?.focusOffset ?? null,
+        anchorClass: selection?.anchorNode?.parentElement?.className || null,
+        insideCell: selection?.anchorNode ? cell.contains(selection.anchorNode) : false,
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      };
+    })()`);
+    assert.ok(draggedSelection.text.length > 0 && draggedSelection.insideCell,
+      `Selecting text inside a cell must work and stay in the cell: ${JSON.stringify({ draggedSelection, caretDrag, active: await evaluate(client, "(document.activeElement && document.activeElement.className) || null"), visible: await evaluate(client, 'window.paperReaderMarkdownPerformance.visibleTableControls') })}`);
+    assert.strictEqual(draggedSelection.tables, 1,
+      `Dragging inside a cell must keep the table rendered: ${JSON.stringify(draggedSelection)}`);
+
+    await client.send("Input.insertText", { text: "Z" });
+    await delay(60);
+    const midTyping = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      activeInsideCell: !!document.activeElement?.closest?.('.paper-reader-cm-cell'),
+      cellText: document.activeElement?.textContent,
+      dirty: window.paperReaderMarkdownPerformance?.tableSessionState?.dirty ?? null,
+    })`);
+    assert.strictEqual(midTyping.tables, 1,
+      `Typing in a table cell must keep the table rendered: ${JSON.stringify(midTyping)}`);
+    assert.strictEqual(midTyping.activeInsideCell, true,
+      `Typing in a table cell must keep focus in the cell: ${JSON.stringify(midTyping)}`);
+    assert.ok(midTyping.cellText.includes('Z'),
+      `Typed character did not reach the cell: ${JSON.stringify(midTyping)}`);
+
+    // The document catches up once typing settles, without the table view ever disappearing.
+    await delay(600);
+    const afterTyping = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      commits: window.paperReaderMarkdownPerformance.tableCommits,
+      session: window.paperReaderMarkdownPerformance.tableSessionState,
+      cells: [...document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell')]
+        .map((cell) => cell.textContent),
+      rows: window.paperReaderMarkdownPerformance.tableRows,
+    })`);
+    assert.strictEqual(afterTyping.tables, 1,
+      `Table disappeared after an in-place cell commit: ${JSON.stringify(afterTyping)}`);
+    assert.ok(afterTyping.commits >= 1,
+      `In-place cell edit never reached the document: ${JSON.stringify(afterTyping)}`);
+    assert.deepStrictEqual(afterTyping.cells, afterTyping.rows.flat(),
+      `Table DOM drifted from the document model: ${JSON.stringify(afterTyping)}`);
+
+    // Cell selection stays inside the cell and must not switch the table to source mode.
+    const selectionState = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:last-child .paper-reader-cm-cell');
+      cell.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(cell);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return { selected: selection.toString() };
+    })()`);
+    await delay(80);
+    const afterSelection = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      editingBlock: window.paperReaderMarkdownPerformance?.editingBlock,
+      activeInsideWidget: !!document.activeElement?.closest?.('.paper-reader-cm-table'),
+    })`);
+    assert.ok(selectionState.selected.length > 0,
+      `Cell selection did not select cell text: ${JSON.stringify(selectionState)}`);
+    assert.strictEqual(afterSelection.tables, 1,
+      `Selecting table cell text must keep the table rendered: ${JSON.stringify(afterSelection)}`);
+    assert.strictEqual(afterSelection.editingBlock, null,
+      `Selecting table cell text must not enter source mode: ${JSON.stringify(afterSelection)}`);
+
+    // Boundary controls stay hidden until the pointer reaches a row or column boundary, and
+    // a boundary may offer more than one action (delete plus insert).
+    await evaluate(client, 'window.paperReaderMarkdownPerformance.hideTableControls()');
+    await delay(60);
+    const controlsHidden = await evaluate(client, `({
+      visible: window.paperReaderMarkdownPerformance.visibleTableControls,
+      total: document.querySelectorAll('.paper-reader-cm-table-control').length,
+    })`);
+    assert.deepStrictEqual(controlsHidden.visible, [],
+      `Controls must start hidden: ${JSON.stringify(controlsHidden)}`);
+    assert.ok(controlsHidden.total > 0, 'Table boundary controls were not created');
+
+    // Every control must have its own spot: two buttons sharing a cell is what made the row
+    // pair look like one crowded block, and it also hides the add-column control entirely.
+    const controlLayout = await evaluate(client, `(() => {
+      const rects = window.paperReaderMarkdownPerformance.tableControlRects;
+      const unplaced = rects.filter((rect) => !rect.boundary);
+      const overlaps = [];
+      for (let i = 0; i < rects.length; i += 1) {
+        for (let j = i + 1; j < rects.length; j += 1) {
+          const a = rects[i];
+          const b = rects[j];
+          if (a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y) {
+            overlaps.push(a.id + '<->' + b.id);
+          }
+        }
+      }
+      return { total: rects.length, unplaced: unplaced.map((rect) => rect.id), overlaps };
+    })()`);
+    assert.deepStrictEqual(controlLayout.unplaced, [],
+      `Every control must belong to a boundary: ${JSON.stringify(controlLayout)}`);
+    assert.deepStrictEqual(controlLayout.overlaps, [],
+      `Table controls must not overlap: ${JSON.stringify(controlLayout)}`);
+
+    // Each control must sit where its meaning says, and must be the one revealed there:
+    // `×` on the row/column it removes, `+` on the junction towards the next one.
+    const controlReach = await evaluate(client, `(() => {
+      const performance = window.paperReaderMarkdownPerformance;
+      const results = [];
+      for (const point of performance.boundaryPoints()) {
+        const resolved = performance.resolveTableControlAt(point.x, point.y) || [];
+        const matches = resolved.filter((entry) => entry.indexOf(point.expect + ':') === 0);
+        results.push({ key: point.key, expect: point.expect, resolved, ok: matches.length > 0, at: [point.x, point.y] });
+      }
+      return results;
+    })()`);
+    const misplaced = controlReach.filter((entry) => !entry.ok);
+    assert.deepStrictEqual(misplaced, [],
+      `Every control must be revealed at the spot its meaning implies: ${JSON.stringify(misplaced.slice(0, 3))}`);
+    const reachableActions = [...new Set(controlReach.flatMap((entry) => entry.resolved.map((id) => id.split(':')[0])))];
+    for (const action of ['insertRow', 'deleteRow', 'insertColumn', 'deleteColumn']) {
+      assert.ok(reachableActions.includes(action),
+        `The ${action} control is not reachable from any boundary: ${JSON.stringify({ controlReach, reachableActions })}`);
+    }
+
+    // Every control must be hit-testable at its own rect: pointing at a button has to reveal
+    // that button, not its neighbour. Rows and columns share this machinery, so one pass over
+    // every control covers both. Rects are read fresh because the table can settle as we go.
+    const controlIds = await evaluate(client,
+      'window.paperReaderMarkdownPerformance.tableControlRects.map((rect) => rect.id)');
+    const unreachable = [];
+    for (const id of controlIds) {
+      const [action, index] = id.split(':');
+      const probe = await evaluate(client, `(() => {
+        const button = document.querySelector('.paper-reader-cm-table-control[data-table-action="${action}"][data-table-index="${index}"]');
+        if (!button) return null;
+        const rect = button.getBoundingClientRect();
+        const x = Math.round(rect.left + rect.width / 2);
+        const y = Math.round(rect.top + rect.height / 2);
+        return { x, y, revealed: window.paperReaderMarkdownPerformance.resolveTableControlAt(x, y) || [] };
+      })()`);
+      assert.ok(probe, `Control ${id} is not in the document`);
+      if (!probe.revealed.includes(id)) unreachable.push({ id, ...probe });
+    }
+    assert.deepStrictEqual(unreachable, [],
+      `Pointing at a control must reveal that control: ${JSON.stringify(unreachable)}`);
+
+    // The middle of a row belongs to that row's own delete control — never to a neighbour's,
+    // which is what keeps "delete this row" unambiguous.
+    const rowMiddle = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:first-child .paper-reader-cm-cell');
+      const rect = cell.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rowMiddle.x, y: rowMiddle.y });
+    await delay(120);
+    const controlsOnRow = await evaluate(client,
+      'window.paperReaderMarkdownPerformance.visibleTableControls');
+    assert.ok(controlsOnRow.length === 0 || controlsOnRow.every((entry) => entry.indexOf('deleteRow:1') === 0),
+      `The middle of a row must only offer that row's own control: ${JSON.stringify({ rowMiddle, controlsOnRow })}`);
+
+    const nearEdge = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:nth-child(2) td:last-child .paper-reader-cm-cell');
+      const cellRect = cell.getBoundingClientRect();
+      return { x: cellRect.right - 6, y: cellRect.bottom - 2, cellBottom: cellRect.bottom };
+    })()`);
+    await client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: nearEdge.x, y: nearEdge.y });
+    await delay(120);
+    const controlsOnEdge = await evaluate(client,
+      'window.paperReaderMarkdownPerformance.visibleTableControls');
+    assert.ok(controlsOnEdge.length > 0,
+      `Pointing at a row boundary must reveal its controls: ${JSON.stringify({ nearEdge, controlsOnEdge })}`);
+    assert.ok(controlsOnEdge.every((entry) => entry.startsWith('insertRow') || entry.startsWith('appendRow')),
+      `A row boundary must only offer row controls: ${JSON.stringify({ nearEdge, controlsOnEdge })}`);
+
+    // Click that revealed control with a real mouse event: the full user path must work.
+    const visibleControlBox = await evaluate(client, `(() => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      if (!button) return null;
+      const rect = button.getBoundingClientRect();
+      return {
+        action: button.dataset.tableAction,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        rows: document.querySelectorAll('.paper-reader-cm-table tbody tr').length,
+      };
+    })()`);
+    assert.ok(visibleControlBox, 'No visible edge control to click');
+    // Hover the control, then click it with a real mouse event. CodeMirror can rebuild the
+    // widget while the button is down, so the control acts on mousedown.
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: visibleControlBox.x, y: visibleControlBox.y,
+    });
+    await delay(100);
+    const clickTarget = await evaluate(client, `(() => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      if (!button) return { missing: true };
+      const rect = button.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      return {
+        action: button.dataset.tableAction,
+        x, y,
+        isTheButton: document.elementFromPoint(x, y) === button,
+        rows: window.paperReaderMarkdownPerformance.tableRows.length,
+      };
+    })()`);
+    assert.ok(clickTarget.isTheButton,
+      `The revealed control is not hit-testable at its own centre: ${JSON.stringify({ visibleControlBox, clickTarget })}`);
+    // Synthetic press first: proves the activation binding itself, independent of CDP hit
+    // testing. The table is restored afterwards, so the real-mouse path is still exercised.
+    const syntheticPress = await evaluate(client, `(() => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      if (!button) return { missing: true };
+      button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+      return {
+        action: button.dataset.tableAction,
+        lastControl: window.paperReaderMarkdownPerformance.lastTableControl,
+      };
+    })()`);
+    assert.ok(syntheticPress.lastControl,
+      `A control mousedown does not reach the table handler: ${JSON.stringify({ clickTarget, syntheticPress })}`);
+    await delay(200);
+    // Put the table back to a known row count after the synthetic press.
+    await evaluate(client, `(() => {
+      const rows = window.paperReaderMarkdownPerformance.tableRows.length;
+      const bodyRows = rows - 1;
+      if (bodyRows > 2) window.paperReaderMarkdownPerformance.runTableControl('deleteRow', 0);
+    })()`);
+    await delay(200);
+    // Re-reveal by hovering a row junction, then travel onto the revealed control the same way
+    // a user does: the control must survive the last few pixels of the approach.
+    await evaluate(client, "window.paperReaderMarkdownPerformance.hideTableControls()");
+    await mouseMove(client, 5, 5);
+    await delay(60);
+    const junction = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:first-child .paper-reader-cm-cell');
+      const rect = cell.getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.bottom) };
+    })()`);
+    await mouseMove(client, junction.x, junction.y);
+    await delay(220);
+    const revealedAgain = await evaluate(client, `(() => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      if (!button) return { missing: true };
+      const rect = button.getBoundingClientRect();
+      return { action: button.dataset.tableAction, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`);
+    assert.ok(!revealedAgain.missing,
+      `Hovering a row junction must reveal its control: ${JSON.stringify({
+        junction,
+        revealedAgain,
+        resolved: await evaluate(client, `window.paperReaderMarkdownPerformance.resolveTableControlAt(${junction.x}, ${junction.y})`),
+      })}`);
+    await mouseMove(client, revealedAgain.x, revealedAgain.y);
+    await delay(200);
+    const realTarget = await evaluate(client, `(() => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      if (!button) return { missing: true };
+      const rect = button.getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      const y = rect.top + rect.height / 2;
+      return { action: button.dataset.tableAction, x, y, hitTest: document.elementFromPoint(x, y) === button };
+    })()`);
+    assert.strictEqual(realTarget.hitTest, true,
+      `The re-revealed control is not hit-testable: ${JSON.stringify({ junction, revealedAgain, realTarget })}`);
+    const rowsBeforeRealClick = await evaluate(client, 'window.paperReaderMarkdownPerformance.tableRows.length');
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: realTarget.x, y: realTarget.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: realTarget.x, y: realTarget.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+    await delay(250);
+    const afterControlClick = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      rows: window.paperReaderMarkdownPerformance.tableRows.length,
+      lastControl: window.paperReaderMarkdownPerformance.lastTableControl,
+    })`);
+    assert.strictEqual(afterControlClick.tables, 1,
+      `Clicking an edge control must keep the table rendered: ${JSON.stringify(afterControlClick)}`);
+    assert.ok(afterControlClick.lastControl,
+      `Clicking an edge control did not reach the table handler: ${JSON.stringify({ realTarget, afterControlClick })}`);
+    assert.strictEqual(afterControlClick.lastControl.action, realTarget.action,
+      `The wrong control action ran: ${JSON.stringify({ realTarget, afterControlClick })}`);
+    assert.strictEqual(afterControlClick.rows,
+      realTarget.action === 'deleteRow' ? rowsBeforeRealClick - 1 : rowsBeforeRealClick + 1,
+      `The edge control did not change the table model as expected: ${JSON.stringify({ realTarget, rowsBeforeRealClick, afterControlClick })}`);
+
+    await evaluate(client, `(() => {
+      window.paperReaderMarkdownPerformance.hideTableControls();
+    })()`);
+    await delay(60);
+    assert.deepStrictEqual(
+      await evaluate(client, 'window.paperReaderMarkdownPerformance.visibleTableControls'),
+      [],
+      'Leaving the table must hide the boundary controls');
+
+    // External row/column controls: insert and delete without losing the table view.
+    const controlState = await evaluate(client, `(() => {
+      const before = window.paperReaderMarkdownPerformance.tableRows;
+      const direct = window.paperReaderMarkdownPerformance.runTableControl('appendRow', 0);
+      return {
+        beforeRows: before.length,
+        direct,
+        controls: window.paperReaderMarkdownPerformance.tableControls,
+        error: window.paperReaderMarkdownPerformance.lastTableControlError || null,
+      };
+    })()`);
+    await delay(120);
+    const afterInsertRow = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      rows: window.paperReaderMarkdownPerformance.tableRows.length,
+      controls: window.paperReaderMarkdownPerformance.tableControlCount,
+      source: window.paperReaderMarkdownPerformance.documentText,
+    })`);
+    assert.strictEqual(afterInsertRow.tables, 1,
+      `Table disappeared after inserting a row: ${JSON.stringify(afterInsertRow)}`);
+    assert.strictEqual(afterInsertRow.rows, controlState.beforeRows + 1,
+      `Inserting a row did not update the model: ${JSON.stringify({ controlState, afterInsertRow })}`);
+
+    const columnState = await evaluate(client, `(() => {
+      const before = window.paperReaderMarkdownPerformance.tableRows[0].length;
+      const direct = window.paperReaderMarkdownPerformance.runTableControl('appendColumn', 0);
+      return { beforeColumns: before, direct, error: window.paperReaderMarkdownPerformance.lastTableControlError || null };
+    })()`);
+    await delay(120);
+    const afterInsertColumn = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      columns: window.paperReaderMarkdownPerformance.tableRows[0].length,
+      headersRendered: document.querySelectorAll('.paper-reader-cm-table thead th').length,
+      divider: window.paperReaderMarkdownPerformance.documentText.split('\\n').find((line) => /^\\|\\s*:?-{3,}/.test(line)) || '',
+    })`);
+    assert.strictEqual(afterInsertColumn.tables, 1,
+      `Table disappeared after inserting a column: ${JSON.stringify(afterInsertColumn)}`);
+    assert.strictEqual(afterInsertColumn.columns, columnState.beforeColumns + 1,
+      `Inserting a column did not update the model: ${JSON.stringify({ columnState, afterInsertColumn })}`);
+    assert.strictEqual(afterInsertColumn.headersRendered, afterInsertColumn.columns,
+      `Rendered header count drifted from the model: ${JSON.stringify(afterInsertColumn)}`);
+
+    const deleteState = await evaluate(client, `(() => {
+      const beforeRows = window.paperReaderMarkdownPerformance.tableRows.length;
+      const direct = window.paperReaderMarkdownPerformance.runTableControl('deleteRow', 0);
+      return { beforeRows, direct, error: window.paperReaderMarkdownPerformance.lastTableControlError || null };
+    })()`);
+    await delay(150);
+    const afterDeleteRow = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      rows: window.paperReaderMarkdownPerformance.tableRows.length,
+      editingBlock: window.paperReaderMarkdownPerformance?.editingBlock,
+    })`);
+    assert.strictEqual(afterDeleteRow.tables, 1,
+      `Table disappeared after deleting a row: ${JSON.stringify(afterDeleteRow)}`);
+    assert.strictEqual(afterDeleteRow.rows, deleteState.beforeRows - 1,
+      `Deleting a row did not update the model: ${JSON.stringify({ deleteState, afterDeleteRow })}`);
+
+    const beforeDeleteColumn = await evaluate(client,
+      `window.paperReaderMarkdownPerformance.tableRows[0].length`);
+    await evaluate(client, `(() => {
+      window.__tableBuildsBeforeDelete = window.paperReaderMarkdownPerformance.tableBuilds;
+      window.__deleteColumnResult = window.paperReaderMarkdownPerformance.runTableControl('deleteColumn', 0);
+    })()`);
+    await delay(150);
+    const afterDeleteColumn = await evaluate(client, `({
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      columns: window.paperReaderMarkdownPerformance.tableRows[0].length,
+      headersRendered: document.querySelectorAll('.paper-reader-cm-table thead th').length,
+      session: window.paperReaderMarkdownPerformance.tableSessionState,
+      buildReuses: window.paperReaderMarkdownPerformance.tableDomReuses,
+      buildsForThisEdit: window.paperReaderMarkdownPerformance.tableBuilds - window.__tableBuildsBeforeDelete,
+    })`);
+    assert.strictEqual(afterDeleteColumn.tables, 1,
+      `Table disappeared after deleting a column: ${JSON.stringify(afterDeleteColumn)}`);
+    assert.strictEqual(afterDeleteColumn.columns, beforeDeleteColumn - 1,
+      `Deleting a column did not update the model: ${JSON.stringify({ beforeDeleteColumn, afterDeleteColumn })}`);
+    assert.strictEqual(afterDeleteColumn.headersRendered, afterDeleteColumn.columns,
+      `Rendered header count drifted from the model: ${JSON.stringify(afterDeleteColumn)}`);
+    assert.ok(afterDeleteColumn.buildsForThisEdit <= 1,
+      `A structural table edit rebuilt the DOM more than once: ${JSON.stringify(afterDeleteColumn)}`);
+
+    // Explicit escape hatch still reaches Markdown source.
+    const sourceEntry = await evaluate(client, `({
+      blockForSelection: window.paperReaderMarkdownPerformance.tableBlockForSelectionNow(),
+      returned: window.paperReaderMarkdownPerformance.editTableSource(),
+    })`);
+    await delay(120);
+    const sourceMode = await evaluate(client, `({
+      editingBlock: window.paperReaderMarkdownPerformance?.editingBlock,
+      tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      version: window.paperReaderMarkdownVersion,
+      selection: [window.paperReaderMarkdownPerformance.selectionFrom, window.paperReaderMarkdownPerformance.selectionTo],
+      blocks: window.paperReaderMarkdownPerformance.documentBlocks,
+      sourceEntry: ${JSON.stringify(sourceEntry)},
+    })`);
+    assert.ok(sourceMode.editingBlock,
+      `The explicit table source command did not enter source mode: ${JSON.stringify(sourceMode)}`);
+    assert.strictEqual(sourceMode.tables, 0,
+      `Table source mode should show Markdown source: ${JSON.stringify(sourceMode)}`);
+    await evaluate(client, `window.paperReaderMarkdownPerformance.resetEditingBlock()`);
+    await delay(120);
+
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(
+      'Intro paragraph.\n\n'
+    )}},'*')`);
+    await delay(140);
     const wrappedText = Array.from({ length: 42 }, (_, index) => `word${index}`).join(' ');
     await evaluate(
       client,
@@ -2471,6 +3205,7 @@ async function main() {
         direction: reverse ? "reverse" : "forward",
         ...geometry,
         ...result,
+        layout: { emptySurface, filledSurface },
         checks: "passed",
       })
     );

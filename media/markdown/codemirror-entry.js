@@ -24,6 +24,20 @@ import {
 } from '@codemirror/language';
 import { openSearchPanel, search, searchKeymap } from '@codemirror/search';
 import katex from 'katex';
+import {
+  deleteTableColumn,
+  deleteTableRow,
+  insertTableColumn,
+  insertTableRow,
+  isTableDivider,
+  normalizeTableModel,
+  parseTableCellLines,
+  serializeTable,
+  splitTableRowCells,
+  tableAlignment,
+  tableEstimatedHeight,
+  unescapeTableCell,
+} from './tableModel.js';
 
 const handler = window.handler;
 let cursorDiagnosticActive = false;
@@ -144,6 +158,13 @@ const performanceStats = {
   mathMapBuilds: 0,
   mathMapCacheHits: 0,
   lastBlockScanRanges: [],
+  tableBuilds: 0,
+  tableDomReuses: 0,
+  tableCommits: 0,
+  tableStructureEdits: 0,
+  tableBuildMs: 0,
+  lastTableCommitMs: 0,
+  maxTableCommitMs: 0,
 };
 const recordSample = (samples, value) => {
   samples.push(Number(value.toFixed(2)));
@@ -262,6 +283,13 @@ Object.defineProperty(performanceStats, 'pointForPosition', {
 const noteUpdate = StateEffect.define();
 const editingBlockUpdate = StateEffect.define();
 const blockIndexRefresh = StateEffect.define();
+
+// Live Markdown table editing state.
+// `tableSession` keeps the mounted table DOM alive across transactions so cell edits,
+// selection changes and structural edits never have to rebuild the table view.
+let tableSession = null;
+const tableElements = new Map();
+const tableCommitDelay = 350;
 const noteState = StateField.define({
   create: () => [],
   update(value, transaction) {
@@ -354,29 +382,6 @@ const resolveImageSource = (source) => {
   }
 };
 
-const splitTableRow = (text) => {
-  let row = text.trim();
-  if (row.startsWith('|')) row = row.slice(1);
-  if (row.endsWith('|') && !row.endsWith('\\|')) row = row.slice(0, -1);
-  return row.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, '|'));
-};
-
-const tableAlignment = (cell) => {
-  const value = cell.trim();
-  return value.startsWith(':') && value.endsWith(':')
-    ? 'center'
-    : value.endsWith(':')
-      ? 'right'
-      : value.startsWith(':')
-        ? 'left'
-        : null;
-};
-
-const isTableDivider = (text) => {
-  const cells = splitTableRow(text);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-};
-
 const syntaxNodesByName = (tree, from, to) => {
   const groups = new Map([
     ['FencedCode', []], ['Table', []], ['InlineCode', []],
@@ -410,6 +415,17 @@ const findOverlappingBlock = (blocks, from, to = from) => {
 
 const isInsideAnyBlock = (blocks, from, to) => Boolean(findOverlappingBlock(blocks, from, to));
 
+// Range-exact lookup used by the explicit source command, which is allowed to target a table.
+const findBlockAt = (blocks, from, to) =>
+  blocks.find((block) => block.from === from && block.to === to) || null;
+
+// Source-edit mode only ever applies to non-table blocks. Tables are edited in place, so
+// the cursor moving into a table must not switch it back to Markdown source.
+const findEditableBlock = (blocks, from, to = from) => {
+  const block = findOverlappingBlock(blocks, from, to);
+  return block && block.type !== 'table' ? block : null;
+};
+
 const sourceLines = (state, from, to) => {
   const first = state.doc.lineAt(from);
   const last = state.doc.lineAt(Math.max(from, to - 1));
@@ -421,27 +437,9 @@ const sourceLines = (state, from, to) => {
 };
 
 const parseTableNode = (state, node) => {
-  const lines = sourceLines(state, node.from, node.to);
-  if (lines.length < 2) return null;
-  const headers = splitTableRow(lines[0].text);
-  const divider = splitTableRow(lines[1].text);
-  if (headers.length < 2 || divider.length !== headers.length ||
-    !isTableDivider(lines[1].text)) return null;
-  const rows = [];
-  for (const line of lines.slice(2)) {
-    if (!line.text.trim() || !line.text.includes('|')) break;
-    const cells = splitTableRow(line.text);
-    if (cells.length !== headers.length) break;
-    rows.push(cells);
-  }
-  return {
-    type: 'table',
-    from: lines[0].from,
-    to: lines[lines.length - 1].to,
-    headers,
-    alignments: divider.map(tableAlignment),
-    rows,
-  };
+  const parsed = parseTableCellLines(sourceLines(state, node.from, node.to));
+  if (!parsed) return null;
+  return { type: 'table', from: node.from, to: node.to, ...parsed };
 };
 
 const parseFencedCodeNode = (state, node) => {
@@ -777,6 +775,43 @@ const activateRange = (node, from, to, event) => {
       ? rendered.offset + (rendered.after ? 1 : 0)
       : 0);
   } else if (node.classList.contains('paper-reader-cm-table')) {
+    const tableHost = event.target instanceof Element
+      ? event.target.closest('.paper-reader-cm-cell')
+      : null;
+    if (tableHost) {
+      // The caret lives in the cell, not in the editor. The editor selection is recorded
+      // for diagnostics only: moving it here would snap the caret to the cell's start and
+      // break click placement and drag selection inside the cell.
+      const block = editorView.state.field(documentBlockPreview).blocks.find(
+        (entry) => entry.type === 'table' && entry.from === from && entry.to === to,
+      );
+      const sourceCell = cellSourceRange(
+        block || {},
+        Number(tableHost.dataset.rowIndex),
+        Number(tableHost.dataset.columnIndex),
+      );
+      const cellAnchor = sourceCell
+        ? sourceCell.contentStart
+        : mapTableCellClick(node, editorView, event);
+      // The host editor focuses itself while handling the same click, so the cell has to
+      // reclaim focus. It happens after the gesture settles, and it never touches the caret.
+      focusTableCell(tableHost);
+      performanceStats.lastWidgetActivation = {
+        from,
+        to,
+        anchor: cellAnchor,
+        sourceRange,
+        tableCell: {
+          row: Number(tableHost.dataset.rowIndex),
+          column: Number(tableHost.dataset.columnIndex),
+        },
+        selectionFrom: editorView.state.selection.main.from,
+      };
+      diagnosticRecord({ kind: 'table-cell-focus', dispatchedAnchor: cellAnchor });
+      recordSample(performanceStats.pointerSamples, performance.now() - started);
+      performanceStats.lastPointerMs = performance.now() - started;
+      return;
+    }
     sourceOffset = mapTableCellClick(node, editorView, event);
   }
   if (!Number.isFinite(sourceOffset)) {
@@ -973,56 +1008,90 @@ class CodeBlockWidget extends WidgetType {
 }
 
 class TableWidget extends WidgetType {
-  constructor(headers, alignments, rows, from, to) {
+  constructor(table, from, to, session) {
     super();
-    this.headers = headers;
-    this.alignments = alignments;
-    this.rows = rows;
+    this.table = table;
     this.from = from;
     this.to = to;
+    this.session = session;
   }
 
   eq(other) {
-    return other.from === this.from &&
-      other.to === this.to &&
-      JSON.stringify(other.headers) === JSON.stringify(this.headers) &&
-      JSON.stringify(other.alignments) === JSON.stringify(this.alignments) &&
-      JSON.stringify(other.rows) === JSON.stringify(this.rows);
+    // Reusing the live DOM is what keeps the caret and focus alive across transactions.
+    // Two widgets for the same live table session are always considered equal so the
+    // editor moves the existing element instead of rebuilding it.
+    if (other.session && other.session === this.session && other.session.live) return true;
+    return other.from === this.from && other.to === this.to &&
+      other.table.from === this.table.from && other.table.to === this.table.to &&
+      JSON.stringify(other.table.rows) === JSON.stringify(this.table.rows) &&
+      JSON.stringify(other.table.headers) === JSON.stringify(this.table.headers);
   }
 
   get estimatedHeight() {
-    return Math.max(72, Math.min(520, (this.rows.length + 1) * 34 + 18));
+    return tableEstimatedHeight(this.table);
   }
 
   toDOM() {
+    const started = performance.now();
     const node = document.createElement('div');
     node.className = 'paper-reader-cm-table';
-    node.title = '点击编辑 Markdown 表格';
-    const table = document.createElement('table');
-    const head = document.createElement('thead');
-    const headRow = document.createElement('tr');
-    this.headers.forEach((header, index) => {
-      const cell = document.createElement('th');
-      cell.textContent = header;
-      if (this.alignments[index]) cell.style.textAlign = this.alignments[index];
-      headRow.appendChild(cell);
-    });
-    head.appendChild(headRow);
-    table.appendChild(head);
-    const body = document.createElement('tbody');
-    this.rows.forEach((row) => {
-      const rowElement = document.createElement('tr');
-      this.headers.forEach((_header, index) => {
-        const cell = document.createElement('td');
-        cell.textContent = row[index] || '';
-        if (this.alignments[index]) cell.style.textAlign = this.alignments[index];
-        rowElement.appendChild(cell);
-      });
-      body.appendChild(rowElement);
-    });
-    table.appendChild(body);
+    // Deliberately no `title`: a native tooltip would follow the pointer across the whole table
+    // and cover the cells, and the rendered table already makes in-place editing obvious.
+    const live = this.session;
+    // The cell DOM is the expensive part and the only thing holding focus and the caret,
+    // so it is moved into the fresh wrapper instead of being rebuilt.
+    if (live && live.live && live.element && tableDomMatchesSessionModel(live, this.table)) {
+      registerTableElement(live, node);
+      node.appendChild(live.element);
+      tableSession = live;
+      bindWidgetActivation(node, this.from, this.to);
+      // The reused wrapper is a different root from the one that was tracked before, so the
+      // pointer tracking has to move with it. Without this, a rebuilt table keeps a listener
+      // that resolves zones against the table it replaced, and no control can be revealed.
+      if (typeof live.bindControlTracking === 'function') {
+        live.bindControlTracking(node);
+      }
+      observeTableGeometry(node, live);
+      const relayout = live.layoutTableControls;
+      if (relayout) {
+        const requestMeasure = live.requestLayoutMeasure;
+        if (typeof requestMeasure === 'function') requestMeasure();
+        else if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => relayout());
+      }
+      recordTableBuild(false, performance.now() - started);
+      restoreTableFocus(live);
+      return node;
+    }
+    const table = buildTableElement(this.table, this.session, this.from, this.to);
+    if (this.session) {
+      this.session.element = table;
+      this.session.node = node;
+      this.session.from = this.from;
+      this.session.to = this.to;
+      this.session.model = this.table;
+      this.session.live = true;
+      tableSession = this.session;
+    }
+    registerTableElement(this.session, node);
     node.appendChild(table);
+    // Only now can cell rects be measured.
+    mountTableElement(table, this.session);
     bindWidgetActivation(node, this.from, this.to);
+    observeTableGeometry(node, this.session);
+    if (typeof this.session.bindControlTracking === 'function') {
+      this.session.bindControlTracking(node);
+    }
+    // Positions can only be measured once the element is in the document, which happens just
+    // after `toDOM` returns. A measure pass is the reliable moment: a bare animation frame can
+    // run before the editor has re-inserted the widget, leaving the controls where the previous
+    // layout put them (measurably ~20px out).
+    const layout = this.session.layoutTableControls;
+    if (layout) {
+      const requestMeasure = this.session.requestLayoutMeasure;
+      if (typeof requestMeasure === 'function') requestMeasure();
+      else if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => layout());
+    }
+    recordTableBuild(true, performance.now() - started);
     return node;
   }
 
@@ -1030,6 +1099,998 @@ class TableWidget extends WidgetType {
     return true;
   }
 }
+
+// Cells are real contenteditable children. CodeMirror forces the widget root to
+// contenteditable=false, which is why the editable host has to be a nested element.
+const buildTableElement = (model, session, from, to) => {
+  const table = document.createElement('table');
+  const head = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  model.headers.forEach((header, index) => {
+    const cell = document.createElement('th');
+    cell.appendChild(buildCellContent(header, 0, index));
+    if (model.alignments[index]) cell.style.textAlign = model.alignments[index];
+    headRow.appendChild(cell);
+  });
+  head.appendChild(headRow);
+  table.appendChild(head);
+  const body = document.createElement('tbody');
+  model.rows.forEach((row, rowIndex) => {
+    const rowElement = document.createElement('tr');
+    model.headers.forEach((_header, index) => {
+      const cell = document.createElement('td');
+      cell.appendChild(buildCellContent(row[index] || '', rowIndex + 1, index));
+      if (model.alignments[index]) cell.style.textAlign = model.alignments[index];
+      rowElement.appendChild(cell);
+    });
+    body.appendChild(rowElement);
+  });
+  table.appendChild(body);
+  // Handlers are deliberately NOT attached here. Everything that binds to this table measures
+  // cell rects, and at this point it is still detached, so every measurement would be zero and
+  // no control could ever be revealed. Whoever puts the table in the document calls
+  // `attachTableHandlers` afterwards, which is the first moment the geometry is real.
+  return table;
+};
+
+// The one place a table becomes measurable: call this only when `table` is in the document.
+const mountTableElement = (table, session) => {
+  attachTableHandlers(table, session);
+  bindFramePress();
+  return table;
+};
+
+// The widget reserves a margin around the table for the boundary controls, and a tall row leaves
+// bare <td>/<th> space beside a short cell. Both belong to the table the reader is looking at, so
+// neither may reach the editor: the editor moves its own selection to the press point and the
+// table then drops out of the view and comes back as Markdown source. The editable host and the
+// controls keep their own handling — the host is where the browser focuses and places the caret,
+// and the controls run their own activation.
+// The widget reserves a margin around the table for the boundary controls. It belongs to the
+// widget, not to the document, so a press there must not reach the editor: the editor moves its
+// own selection to the press point, and the table then drops out of the view and comes back as
+// Markdown source. The editable host keeps its own handling — that is where the browser focuses
+// and places the caret — and so do the controls.
+const bindFramePress = () => {
+  if (bindFramePress.bound) return;
+  bindFramePress.bound = true;
+  for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
+    window.addEventListener(type, (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest('.paper-reader-cm-table')) return;
+      if (target.closest('.paper-reader-cm-cell') || target.closest('.paper-reader-cm-table-control')) return;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  }
+};
+
+// A row is as tall as its tallest cell, so a short cell leaves dead space beside its taller
+// neighbour: it looks like part of the cell but belongs to the bare table cell, so a press there
+// misses the host. Stretching each host to its row's height gives the cell the whole box the
+// reader sees. The min-height is cleared before measuring, or the row would grow to include the
+// height the previous pass wrote and each pass would inflate the table further.
+const stretchTableCells = (table) => {
+  const rows = [...table.querySelectorAll('tr')];
+  const hosts = [];
+  for (const row of rows) {
+    const rowHosts = [...row.querySelectorAll('.paper-reader-cm-cell')];
+    for (const host of rowHosts) {
+      host.style.minHeight = '';
+      hosts.push(host);
+    }
+  }
+  // Reading every row height only after clearing them all keeps the measurements independent.
+  for (const row of rows) {
+    const height = Math.round(row.getBoundingClientRect().height);
+    if (!height) continue;
+    for (const host of row.querySelectorAll('.paper-reader-cm-cell')) {
+      host.style.minHeight = `${height}px`;
+    }
+  }
+};
+
+// Positions are derived from live geometry, so they have to be refreshed whenever that geometry
+// changes. A pointer pass covers scrolling and resizing while the pointer is over the table;
+// this covers the rest — a document update or a re-render that changes row heights — which
+// would otherwise leave the controls where the previous layout put them.
+const observeTableGeometry = (node, session) => {
+  if (typeof ResizeObserver !== 'function') return;
+  if (session.geometryObserver) session.geometryObserver.disconnect();
+  const observer = new ResizeObserver(() => {
+    if (typeof session.layoutTableControls === 'function') session.layoutTableControls();
+  });
+  observer.observe(node);
+  session.geometryObserver = observer;
+};
+
+const buildCellContent = (text, rowIndex, columnIndex) => {
+  const host = document.createElement('div');
+  host.className = 'paper-reader-cm-cell';
+  host.setAttribute('contenteditable', 'plaintext-only');
+  host.spellcheck = false;
+  host.dataset.rowIndex = String(rowIndex);
+  host.dataset.columnIndex = String(columnIndex);
+  host.textContent = text;
+  return host;
+};
+
+const tableCellHosts = (table) => [...(table?.querySelectorAll('.paper-reader-cm-cell') || [])];
+
+const cellHostAt = (table, rowIndex, columnIndex) =>
+  table?.querySelector(
+    `.paper-reader-cm-cell[data-row-index="${rowIndex}"][data-column-index="${columnIndex}"]`,
+  ) || null;
+
+const findCellHost = (target) => (target instanceof Element ? target.closest('.paper-reader-cm-cell') : null);
+
+const offsetWithinCell = (host, node, offset) => {
+  if (!host.contains(node)) return null;
+  let total = 0;
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  let current;
+  while ((current = walker.nextNode())) {
+    if (current === node) return total + offset;
+    total += current.data.length;
+  }
+  return total;
+};
+
+const caretOffsetInCell = (host) => {
+  const selection = document.getSelection();
+  if (!selection || !selection.anchorNode) return null;
+  return offsetWithinCell(host, selection.anchorNode, selection.anchorOffset);
+};
+
+const setCaretInCell = (host, offset) => {
+  const text = host.textContent || '';
+  const target = Math.max(0, Math.min(text.length, Number.isFinite(offset) ? offset : text.length));
+  let remaining = target;
+  let node = null;
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  while ((node = walker.nextNode())) {
+    if (remaining <= node.data.length) break;
+    remaining -= node.data.length;
+  }
+  const selection = document.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  if (node) range.setStart(node, Math.min(remaining, node.data.length));
+  else range.setStart(host, 0);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
+
+// Character offset inside a cell for a pointer position. Needed because CodeMirror cancels
+// the default widget mousedown, so the browser never places the caret by itself.
+const caretOffsetFromPoint = (host, event) => {
+  if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return null;
+  let range = null;
+  if (typeof document.caretRangeFromPoint === 'function') {
+    range = document.caretRangeFromPoint(event.clientX, event.clientY);
+  } else if (typeof document.caretPositionFromPoint === 'function') {
+    const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+    if (position) {
+      range = document.createRange();
+      range.setStart(position.offsetNode, position.offset);
+      range.collapse(true);
+    }
+  }
+  if (!range || !host.contains(range.startContainer)) return null;
+  const offset = offsetWithinCell(host, range.startContainer, range.startOffset);
+  if (offset !== null) return offset;
+  // A row is as tall as its tallest cell, so clicking in the blank space below a short cell
+  // resolves to the cell element itself rather than to a text position. Clamp to the nearest
+  // end of its text instead of refusing to move the caret at all.
+  const text = host.textContent || '';
+  if (range.startContainer === host) {
+    // Ask the DOM which side of the cell's text the hit landed on rather than guessing from the
+    // child index: a cell whose content is a single text node has no element children at all.
+    const probe = document.createRange();
+    probe.selectNodeContents(host);
+    probe.setEnd(range.startContainer, range.startOffset);
+    const consumed = probe.toString().length;
+    return consumed <= 0 ? 0 : text.length;
+  }
+  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+  const first = walker.nextNode();
+  if (!first) return text.length;
+  return first.compareDocumentPosition(range.startContainer) === Node.DOCUMENT_POSITION_PRECEDING
+    ? text.length
+    : 0;
+};
+
+const cellSourceRange = (model, rowIndex, columnIndex) => {
+  const source = model?.source;
+  if (!source) return null;
+  if (rowIndex === 0) return source.headerCells?.[columnIndex] || null;
+  return source.bodyCells?.[rowIndex - 1]?.[columnIndex] || null;
+};
+
+// The document is the source of truth; the DOM is allowed to run ahead while the user
+// types, and is reconciled with a single minimal transaction once typing settles.
+const commitTableCell = (session, host, options = {}) => {
+  const editorView = view || (host && EditorView.findFromDOM(host));
+  if (!editorView || !session) return false;
+  const rowIndex = Number(host?.dataset.rowIndex);
+  const columnIndex = Number(host?.dataset.columnIndex);
+  if (!Number.isFinite(rowIndex) || !Number.isFinite(columnIndex)) return false;
+  const blocks = editorView.state.field(documentBlockPreview).blocks;
+  const block = blocks.find((entry) => entry.type === 'table' && entry.from === session.from) ||
+    blocks.find((entry) => entry.type === 'table' && entry.from <= session.to && entry.to >= session.from);
+  if (!block) return false;
+  const source = cellSourceRange(block, rowIndex, columnIndex);
+  if (!source) return false;
+  const domText = String(host.textContent ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+  const sourceText = source.text;
+  const caret = caretOffsetInCell(host);
+  if (domText === sourceText) {
+    if (options.force && host.textContent !== sourceText) host.textContent = sourceText;
+    return false;
+  }
+  let prefix = 0;
+  const limit = Math.min(domText.length, sourceText.length);
+  while (prefix < limit && domText[prefix] === sourceText[prefix]) prefix += 1;
+  let suffix = 0;
+  while (
+    suffix < limit - prefix &&
+    domText[domText.length - 1 - suffix] === sourceText[sourceText.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const removed = sourceText.length - prefix - suffix;
+  const insert = domText.slice(prefix, domText.length - suffix);
+  const started = performance.now();
+  editorView.dispatch({
+    changes: {
+      from: source.contentStart + prefix,
+      to: source.contentEnd - suffix,
+      insert,
+    },
+  });
+  performanceStats.tableCommits += 1;
+  performanceStats.lastTableCommitMs = Number((performance.now() - started).toFixed(2));
+  performanceStats.maxTableCommitMs = Math.max(
+    performanceStats.maxTableCommitMs,
+    performanceStats.lastTableCommitMs,
+  );
+  const delta = insert.length - removed;
+  if (Number.isFinite(caret)) setCaretInCell(host, caret + delta);
+  session.dirty = false;
+  session.pending = null;
+  return true;
+};
+
+const flushTableSession = (session, options = {}) => {
+  if (!session?.pending) return false;
+  const { host, caret } = session.pending;
+  session.pending = null;
+  if (!host || !host.isConnected) return false;
+  const committed = commitTableCell(session, host, options);
+  if (Number.isFinite(caret)) setCaretInCell(host, caret);
+  return committed;
+};
+
+const markCellDirty = (session, host) => {
+  if (!session || !host) return;
+  session.dirty = true;
+  session.pending = { host, caret: caretOffsetInCell(host) };
+  window.clearTimeout(session.commitTimer);
+  // While the user keeps typing the DOM owns the caret; the document catches up once
+  // typing settles so a burst of input costs exactly one transaction.
+  session.commitTimer = window.setTimeout(() => {
+    session.commitTimer = 0;
+    flushTableSession(session);
+  }, tableCommitDelay);
+};
+
+const replaceTableInDocument = (session, model) => {
+  const editorView = view;
+  if (!editorView || !session) return false;
+  const blocks = editorView.state.field(documentBlockPreview).blocks;
+  const block = blocks.find((entry) => entry.type === 'table' && entry.from === session.from) ||
+    blocks.find((entry) => entry.type === 'table' && entry.from <= session.to && entry.to >= session.from);
+  if (!block) return false;
+  window.clearTimeout(session.commitTimer);
+  session.commitTimer = 0;
+  session.pending = null;
+  session.dirty = false;
+  const content = serializeTable(model);
+  // Row/column changes alter the table's shape, so the mounted DOM has to be rebuilt.
+  // This has to happen here rather than in `toDOM`: while the session is live the widget
+  // compares equal, so CodeMirror reuses the cached DOM and never calls `toDOM` again.
+  // No cell is focused during a structural edit, so replacing the table costs no caret.
+  rebuildSessionTable(session, model, block.from, block.from + content.length);
+  session.structure += 1;
+  session.model = model;
+  session.from = block.from;
+  session.to = block.from + content.length;
+  performanceStats.tableStructureEdits += 1;
+  editorView.dispatch({
+    changes: { from: block.from, to: block.to, insert: content },
+  });
+  return true;
+};
+
+// Rebuilds the mounted table for the current session. Reads the live wrapper from the DOM
+// instead of trusting a cached reference, so a stale session can never leave the view
+// showing the previous shape.
+const rebuildSessionTable = (session, model, from, to) => {
+  const mounted = document.querySelector('.paper-reader-cm-table');
+  if (!mounted) return null;
+  const previous = mounted.querySelector('table');
+  const rebuilt = buildTableElement(model, session, from, to);
+  if (previous) mounted.replaceChild(rebuilt, previous);
+  else mounted.appendChild(rebuilt);
+  // The table is live now, so the reveal zones can finally measure real cell rects.
+  mountTableElement(rebuilt, session);
+  session.element = rebuilt;
+  session.node = mounted;
+  tableElements.set(mounted, session);
+  recordTableBuild(true, 0);
+  return rebuilt;
+};
+
+const tableModelOf = (block) => normalizeTableModel({
+  headers: block.headers,
+  alignments: block.alignments,
+  rows: block.rows,
+});
+
+const attachTableHandlers = (table, session) => {
+  attachTableControls(table, session);
+  // Re-binding the controls is safe and required after a rebuild, but these cell handlers must
+  // be attached exactly once per element.
+  if (table.dataset.paperReaderHandlers === 'bound') return;
+  table.dataset.paperReaderHandlers = 'bound';
+  table.addEventListener('focusin', () => {
+    if (session) session.focused = true;
+  });
+  table.addEventListener('focusout', (event) => {
+    if (!session) return;
+    session.focused = false;
+    const host = findCellHost(event.target);
+    if (host && !table.contains(event.relatedTarget)) flushTableSession(session);
+  });
+  table.addEventListener('mousedown', (event) => {
+    // CodeMirror preventDefaults widget mousedowns, which cancels the browser's own caret
+    // placement. Resolve the offset from the click point so click and drag behave natively.
+    const host = findCellHost(event.target);
+    if (!host || event.button !== 0) return;
+    const offset = caretOffsetFromPoint(host, event);
+    if (host !== document.activeElement) host.focus();
+    if (Number.isFinite(offset)) {
+      // Focusing a contenteditable resets its selection, and the host editor also focuses
+      // itself during this same gesture, so the caret is applied on the next frame. That
+      // re-apply must never fire once the gesture has become a drag: collapsing a selection
+      // the user just made is worse than leaving the caret where the browser put it.
+      setCaretInCell(host, offset);
+      if (typeof requestAnimationFrame === 'function') {
+        host.dataset.pendingCaret = String(offset);
+        requestAnimationFrame(() => {
+          const pending = host.dataset.pendingCaret;
+          delete host.dataset.pendingCaret;
+          if (!host.isConnected || pending === undefined || document.activeElement !== host) return;
+          const selection = document.getSelection();
+          // A non-collapsed selection means the gesture turned into a drag; leave it alone.
+          if (selection && !selection.isCollapsed && host.contains(selection.anchorNode)) return;
+          setCaretInCell(host, Number(pending));
+        });
+      }
+    }
+  }, true);
+  table.addEventListener('input', (event) => {
+    const host = findCellHost(event.target);
+    if (!host || event.isComposing) return;
+    markCellDirty(session, host);
+  });
+  table.addEventListener('beforeinput', (event) => {
+    if (event.inputType?.startsWith('insert') && /[\r\n\t]/.test(event.data || '')) {
+      // Cell content is single-line Markdown; line breaks would break the table syntax.
+      event.preventDefault();
+      const host = findCellHost(event.target);
+      if (host && event.data) document.execCommand('insertText', false, event.data.replace(/[\r\n\t]+/g, ' '));
+    }
+  });
+  table.addEventListener('keydown', (event) => {
+    const host = findCellHost(event.target);
+    if (!host || !session) return;
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      const rowIndex = Number(host.dataset.rowIndex);
+      const columnIndex = Number(host.dataset.columnIndex);
+      flushTableSession(session);
+      if (event.key === 'Enter') {
+        moveTableCellFocus(session, rowIndex + 1, columnIndex, rowIndex + 1 > tableModelRowCount(session));
+      } else {
+        const backwards = event.shiftKey;
+        const columns = Math.max(1, tableModelColumnCount(session));
+        const flat = rowIndex * columns + columnIndex + (backwards ? -1 : 1);
+        moveTableCellFocus(session, Math.floor(flat / columns), flat % columns, false, true);
+      }
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      window.clearTimeout(session.commitTimer);
+      session.commitTimer = 0;
+      session.pending = null;
+      session.dirty = false;
+      const block = view.state.field(documentBlockPreview).blocks
+        .find((entry) => entry.type === 'table' && entry.from === session.from);
+      host.textContent = cellSourceRange(
+        block || {},
+        Number(host.dataset.rowIndex),
+        Number(host.dataset.columnIndex),
+      )?.text ?? host.textContent;
+      host.blur();
+      view.focus();
+    }
+  });
+};
+
+const tableModelRowCount = (session) => (session?.model?.rows?.length ?? 0) + 1;
+
+const tableModelColumnCount = (session) => Math.max(1, session?.model?.headers?.length ?? 1);
+
+const moveTableCellFocus = (session, rowIndex, columnIndex, addRow, wrap = false) => {
+  if (!session?.element) return;
+  const rows = tableModelRowCount(session);
+  const columns = tableModelColumnCount(session);
+  let row = rowIndex;
+  let column = columnIndex;
+  if (wrap) {
+    if (row < 0) {
+      row = rows - 1;
+      column = columns - 1;
+    } else if (row >= rows) {
+      row = 0;
+      column = 0;
+    }
+  }
+  if (addRow && row >= rows) {
+    const model = insertTableRow(session.model, session.model.rows.length - 1, 'after');
+    if (replaceTableInDocument(session, model)) {
+      const host = cellHostAt(session.element, row, Math.min(column, columns - 1));
+      if (host) {
+        host.focus();
+        setCaretInCell(host, (host.textContent || '').length);
+      }
+      return;
+    }
+  }
+  const host = cellHostAt(
+    session.element,
+    Math.max(0, Math.min(row, rows - 1)),
+    Math.max(0, Math.min(column, columns - 1)),
+  );
+  if (!host) return;
+  host.focus();
+  setCaretInCell(host, 0);
+};
+
+const registerTableElement = (session, node) => {
+  if (!session) return;
+  session.node = node;
+  tableElements.set(node, session);
+};
+
+// CodeMirror preventDefaults widget mousedowns, so the editable cell has to be focused
+// explicitly, and re-focused once after the gesture so the editor cannot reclaim focus.
+const focusTableCell = (host) => {
+  if (!host || !host.isConnected) return;
+  host.focus();
+  requestAnimationFrame(() => {
+    if (host.isConnected && document.activeElement !== host) host.focus();
+  });
+};
+
+const restoreTableFocus = (session) => {
+  if (!session?.pendingFocus || !session.element) return;
+  const { rowIndex, columnIndex, caret } = session.pendingFocus;
+  session.pendingFocus = null;
+  const host = cellHostAt(session.element, rowIndex, columnIndex);
+  if (!host) return;
+  requestAnimationFrame(() => {
+    if (!host.isConnected) return;
+    host.focus();
+    setCaretInCell(host, Number.isFinite(caret) ? caret : (host.textContent || '').length);
+  });
+};
+
+const sessionForTableElement = (node) => (node ? tableElements.get(node) : null);
+
+const recordTableBuild = (built, elapsed) => {
+  if (built) {
+    performanceStats.tableBuilds += 1;
+  } else {
+    performanceStats.tableDomReuses += 1;
+  }
+  performanceStats.tableBuildMs = Number(elapsed.toFixed(2));
+};
+
+// True when the mounted cells already show exactly the model's text. This is what makes it
+// safe to keep the live DOM across transactions: an in-place cell edit leaves the DOM and
+// the model in agreement, while any other edit (another editor, a structural change, an
+// external update) falls back to a rebuild.
+const tableDomMatchesSessionModel = (session, model) => {
+  if (!session?.element) return false;
+  const pads = [model.headers, ...model.rows];
+  const rows = session.element.querySelectorAll('tr');
+  if (rows.length !== pads.length) return false;
+  for (let rowIndex = 0; rowIndex < pads.length; rowIndex += 1) {
+    const hosts = rows[rowIndex].querySelectorAll('.paper-reader-cm-cell');
+    if (hosts.length !== pads[rowIndex].length) return false;
+    for (let columnIndex = 0; columnIndex < pads[rowIndex].length; columnIndex += 1) {
+      if (String(hosts[columnIndex].textContent) !== String(pads[rowIndex][columnIndex] ?? '')) {
+        return false;
+      }
+    }
+  }
+  return true;
+};
+
+// Structural controls are hidden by default. They appear only when the pointer comes close
+// to a row or column edge, so they never sit on top of the table content uninvited.
+const TABLE_CONTROL_ACTIONS = {
+  insertRow: (model, index) => insertTableRow(model, index, 'after'),
+  appendRow: (model) => insertTableRow(model, Math.max(0, model.rows.length - 1), 'after'),
+  deleteRow: (model, index) => deleteTableRow(model, index),
+  insertColumn: (model, index) => insertTableColumn(model, index, 'after'),
+  appendColumn: (model) => insertTableColumn(model, Math.max(0, model.headers.length - 1), 'after'),
+  deleteColumn: (model, index) => deleteTableColumn(model, index),
+  deleteTable: () => null,
+};
+
+const buildTableControlButton = (action, index, glyph, title) => {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'paper-reader-cm-table-control';
+  button.dataset.tableAction = action;
+  button.dataset.tableIndex = String(index);
+  button.title = title;
+  button.setAttribute('aria-label', title);
+  button.tabIndex = 0;
+  button.textContent = glyph;
+  return button;
+};
+
+const showTableControls = (session, buttons) => {
+  if (!session?.controls) return;
+  const next = Array.isArray(buttons) ? buttons.filter(Boolean) : [];
+  // Clear from the DOM instead of a cached reference: the table DOM is rebuilt on
+  // structural edits, which would otherwise leave the previous buttons painted.
+  document.querySelectorAll('.paper-reader-cm-table-control--visible').forEach((visible) => {
+    if (!next.includes(visible)) visible.classList.remove('paper-reader-cm-table-control--visible');
+  });
+  next.forEach((button) => button.classList.add('paper-reader-cm-table-control--visible'));
+  // The session list is what the "pointer is travelling to a revealed control" check reads,
+  // so it must never describe buttons that are no longer on screen.
+  session.visibleControls = next;
+};
+
+// A control is revealed from a small distance away. The two zones a row (or column) splits
+// into do not overlap: `×` owns the middle of the row/column it removes, `+` owns the rest,
+// which is the junction towards the next one.
+const TABLE_BOUNDARY_TOLERANCE = 6;
+const TABLE_JUNCTION_TOLERANCE = 13;
+const TABLE_CENTRE_TOLERANCE = 26;
+
+// Column controls live in a band the widget reserves above the header, in two rows: delete on
+// top, insert underneath. Row controls live in a single lane in the left gutter, flush against
+// the table. A control is deliberately small: at this size the row's `×` (on the row's centre)
+// and the `+` (on the junction 18px below) share one lane without ever overlapping, which is
+// what lets both hug the table instead of being spread across two lanes.
+const CONTROL_SIZE = 14;
+// How far the pointer may stray from a control and still reveal it. Rows are spread down the
+// left gutter and columns across the band above the header, so the two use separate reaches.
+const ROW_ZONE_REACH = 12;
+const COLUMN_ZONE_REACH = 13;
+const COLUMN_CONTROL_SIZE = CONTROL_SIZE;
+// Two stacked controls plus the gaps that keep the `×` flush with the table's top edge.
+const COLUMN_BAND_HEIGHT = CONTROL_SIZE * 2 + 4;
+
+const attachTableControls = (table, session) => {
+  // Re-binding is allowed: a structural edit rebuilds the table while it is still detached, so
+  // the cells captured here have zero rects until it lands in the document. Whoever mounts the
+  // table calls this again, and the stale layer is discarded rather than left behind.
+  if (session.controlLayer && session.controlLayer.parentNode) {
+    session.controlLayer.parentNode.removeChild(session.controlLayer);
+  }
+  const layer = document.createElement('div');
+  layer.className = 'paper-reader-cm-table-controls';
+  layer.setAttribute('aria-hidden', 'true');
+  session.controlLayer = layer;
+
+  // One canonical registry per session. Every binding pass writes into it rather than keeping a
+  // private map, so whoever resolves a zone always sees the buttons of the layer that is on
+  // screen — even after a rebuild has replaced both the <table> and its controls layer.
+  const controls = session.controls || new Map();
+  controls.clear();
+  session.controls = controls;
+  // Where each control was placed, in viewport coordinates. The reveal zones are derived from
+  // these anchors, so a zone can never drift off the control it is meant to reveal.
+  session.controlAnchorPoints = {};
+  const add = (action, index, glyph, title, lane, key) => {
+    const button = buildTableControlButton(action, index, glyph, title);
+    button.dataset.lane = String(lane);
+    if (key) button.dataset.boundary = key;
+    layer.appendChild(button);
+    controls.set(`${action}:${index}`, button);
+    return button;
+  };
+
+  // Geometry is read from the mounted table on every pass rather than captured here: a widget
+  // rebuild replaces the <table> element, and a closure holding the replaced one silently
+  // measures an empty detached tree (every rect zero), which disables every reveal zone.
+  // Geometry is read from the table that is actually connected to the document. A widget
+  // rebuild can leave `session.node` pointing at a detached wrapper, and measuring that gives
+  // zero-sized cells, which silently disables every reveal zone.
+  // Row geometry comes from the <tr> itself, never from one of its cells: a row is as tall as
+  // its tallest cell, so anchoring to the first cell puts the controls in the wrong place as
+  // soon as any other column wraps onto a second line.
+  const mountedTable = () => {
+    const candidates = [
+      ...document.querySelectorAll('.paper-reader-cm-table table'),
+      session.node?.querySelector?.('table'),
+      table,
+    ];
+    for (const candidate of candidates) {
+      if (candidate && candidate.isConnected) return candidate;
+    }
+    return table;
+  };
+  const liveHeaderCells = () => [...mountedTable().querySelectorAll('thead th .paper-reader-cm-cell')];
+  const liveBodyRows = () => [...mountedTable().querySelectorAll('tbody tr')];
+  const tableRows = () => liveBodyRows().length;
+
+  // Build one control per zone, derived from the table that is on screen right now.
+  const columns = Math.max(1, liveHeaderCells().length);
+  liveHeaderCells().forEach((_cell, columnIndex) => {
+    // Both of a column's controls are revealed together, so they share the column's zone key.
+    const columnKey = `column-${columnIndex}`;
+    add('deleteColumn', columnIndex, '×', `Delete column ${columnIndex + 1}`, 2, columnKey);
+    // The last column has no junction to its right: the append control owns that one.
+    if (columnIndex < columns - 1) {
+      add('insertColumn', columnIndex, '+', `Insert column right of column ${columnIndex + 1}`, 0, columnKey);
+    }
+  });
+  add('appendColumn', columns - 1, '+', 'Add column at the end', 6, `column-${columns - 1}`);
+  liveBodyRows().forEach((_row, rowIndex) => {
+    const junctionKey = `row-junction-${rowIndex}`;
+    add('deleteRow', rowIndex, '×', `Delete row ${rowIndex + 1}`, 3, `row-${rowIndex}`);
+    add('insertRow', rowIndex, '+', `Insert row below row ${rowIndex + 1}`, 1, junctionKey);
+    if (rowIndex === tableRows() - 1) {
+      add('deleteTable', 0, '×', 'Delete table', 4, 'deleteTable:0');
+      add('appendRow', rowIndex, '+', 'Add row at the end', 5, junctionKey);
+    }
+  });
+
+  // Placement mirrors what each control means, and every control gets its own lane so no two
+  // ever share a spot:
+  //   gutter left of the table  -> row insert `+` at the junction between two rows (inner
+  //                                lane, hugging the table) and row delete `×` beside the row
+  //                                it removes (outer lane, on the row's centre line)
+  //   band above the header     -> column insert `+` at the junction between two columns, and
+  //                                column delete `×` above the column it removes
+  //   table end                 -> append row / append column / delete table
+  // Offsets are re-derived from live cell rects on every pass, so scrolling, resizing and a
+  // rebuilt widget can never leave the buttons stacked at the widget origin.
+  const layoutTableControls = () => {
+    const headerCells = liveHeaderCells();
+    const bodyRows = liveBodyRows();
+    if (!headerCells.length || !bodyRows.length) return false;
+    // Cells are stretched to their row's height here, where the geometry is real. Done before
+    // anything is measured, so the controls are placed against the final layout.
+    stretchTableCells(mountedTable());
+    const layerRect = layer.getBoundingClientRect();
+    const frame = !layerRect.width && !layerRect.height
+      ? (session.node?.getBoundingClientRect?.() || layerRect)
+      : layerRect;
+    if (!frame.width && !frame.height) return false;
+    const half = COLUMN_CONTROL_SIZE / 2;
+    // Places a button so that its centre lands on (`centreX`, `centreY`), and records that
+    // anchor for the reveal zones to be built from.
+    const place = (button, centreX, centreY, key) => {
+      if (!button) return;
+      button.style.left = `${Math.round(centreX - half - frame.left)}px`;
+      button.style.top = `${Math.round(centreY - half - frame.top)}px`;
+      if (key) session.controlAnchorPoints[key] = { x: centreX, y: centreY };
+    };
+    // One lane for both row controls, right-aligned flush against the table's left edge. `×`
+    // sits on its row's centre line and `+` on the junction below it; a control is small enough
+    // that the two never collide there, so neither has to be pushed away from the table.
+    const rowLaneX = (rect) => rect.left - half - 2;
+
+    // Both column controls share ONE lane, two pixels above the table's top border — the same
+    // way both row controls share one lane beside the table's left edge. Stacking them in two
+    // lanes is what pushed one of them a whole control's height away from the table, so neither
+    // ever read as attached. They fit in one lane because they sit at different x: `×` over its
+    // column's centre, `+` out at that column's right boundary, which are at least half a column
+    // apart.
+    const tableTop = headerCells[0].getBoundingClientRect().top;
+    const controlBandY = tableTop - half - 2;
+
+    headerCells.forEach((cell, columnIndex) => {
+      const rect = cell.getBoundingClientRect();
+      // `×` removes this column, so it sits above the column's own centre: that is the spot a
+      // reader points at when they mean "this column".
+      place(controls.get(`deleteColumn:${columnIndex}`), (rect.left + rect.right) / 2, controlBandY, `deleteColumn:${columnIndex}`);
+      // `+` sits on the junction to the right of this column, hugging the table's edge.
+      if (columnIndex < headerCells.length - 1) {
+        place(controls.get(`insertColumn:${columnIndex}`), rect.right + half, controlBandY, `insertColumn:${columnIndex}`);
+      }
+    });
+    const lastHeader = headerCells[headerCells.length - 1].getBoundingClientRect();
+    // No column exists to the right, so the append control is parked just outside the table.
+    place(controls.get(`appendColumn:${headerCells.length - 1}`), lastHeader.right + half, controlBandY, `appendColumn:${headerCells.length - 1}`);
+
+    bodyRows.forEach((row, rowIndex) => {
+      const rect = row.getBoundingClientRect();
+      // `×` removes this row, so it sits on the row's own centre line.
+      place(controls.get(`deleteRow:${rowIndex}`), rowLaneX(rect), (rect.top + rect.bottom) / 2, `deleteRow:${rowIndex}`);
+      // `+` sits on the junction below this row, i.e. between it and the next row. It is nudged
+      // a couple of pixels further down so it does not touch the next row's `×` in the shared
+      // lane: the two are only half a row apart by construction.
+      place(controls.get(`insertRow:${rowIndex}`), rowLaneX(rect), rect.bottom + 2, `insertRow:${rowIndex}`);
+      if (rowIndex === bodyRows.length - 1) {
+        // Nothing exists below the last row, so the junction lane is free there.
+        place(controls.get(`appendRow:${rowIndex}`), rowLaneX(rect), rect.bottom + COLUMN_BAND_HEIGHT + 2, `appendRow:${rowIndex}`);
+        place(controls.get('deleteTable:0'), rect.right + CONTROL_SIZE + 6, rect.top, 'deleteTable:0');
+      }
+    });
+
+    session.controlLayoutOrigin = frame.left + frame.top;
+    return true;
+  };
+  // The widget may still be detached here, so this first attempt can find zero geometry.
+  // `toDOM` re-runs it once the element is in the document, and every pointer pass re-runs it,
+  // so scrolling and rebuilding can never leave the buttons stacked at the widget origin.
+  layoutTableControls();
+  session.layoutTableControls = layoutTableControls;
+  // The widget asks the editor to measure before laying the controls out, so positions land in
+  // the same pass that establishes the table's final geometry.
+  session.requestLayoutMeasure = () => {
+    if (view && typeof view.requestMeasure === 'function') {
+      view.requestMeasure({ read: () => layoutTableControls() });
+      return;
+    }
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => layoutTableControls());
+  };
+
+  session.visibleControls = [];
+
+  // The control the pointer belongs to. Pointing at a button always reveals that button; away
+  // from any button the nearest control wins, measured along the axis that separates it from its
+  // neighbours (rows down the left gutter, columns across the band above the header). Every
+  // control records where it was placed, so a control can never fall outside its own reach —
+  // which is what used to make a button impossible to hit at its own centre.
+  const pointerJitter = 3;
+  const boundaryAt = (event) => {
+    const anchors = session.controlAnchorPoints || {};
+    const headerCells = liveHeaderCells();
+    const connected = [];
+    for (const [id, anchor] of Object.entries(anchors)) {
+      const button = controls.get(id);
+      if (!button || !button.isConnected) continue;
+      // Pointing at a button always reveals that button. That is the one rule a user can rely
+      // on, and it is what keeps the controls at the table's far end reachable: distance along
+      // the row lane says nothing about them.
+      const rect = button.getBoundingClientRect();
+      if (event.clientX >= rect.left - pointerJitter && event.clientX <= rect.right + pointerJitter &&
+        event.clientY >= rect.top - pointerJitter && event.clientY <= rect.bottom + pointerJitter) {
+        return { distance: 0, key: id, buttons: [button] };
+      }
+      connected.push({ id, anchor });
+    }
+    // Otherwise the nearest control wins, measured along the axis that separates it from its
+    // neighbours: rows are spread down the left gutter, columns across the band above the
+    // header. Column zones stop at the header, or a wide column would claim the whole body.
+    const headerBottom = headerCells.length
+      ? Math.max(...headerCells.map((cell) => cell.getBoundingClientRect().bottom))
+      : 0;
+    let best = null;
+    for (const { id, anchor } of connected) {
+      const isRow = id.indexOf('Row') >= 0;
+      if (!isRow && event.clientY > headerBottom) continue;
+      const delta = isRow ? event.clientY - anchor.y : event.clientX - anchor.x;
+      const distance = Math.abs(delta);
+      if (distance > (isRow ? ROW_ZONE_REACH : COLUMN_ZONE_REACH)) continue;
+      const real = Math.hypot(event.clientX - anchor.x, event.clientY - anchor.y);
+      if (best && real >= best.distance) continue;
+      best = { distance: real, key: id, buttons: [controls.get(id)] };
+    }
+    return best;
+  };
+  const resolveControlsAt = (event) => {
+    // Re-derive the positions before every hit test: the table moves with the editor scroll,
+    // and this also recovers the layout when the first attempt ran before the widget mounted.
+    // A layout that cannot be measured (detached layer, empty table) must reveal nothing —
+    // otherwise the zones are computed against stale geometry and paint buttons out of place.
+    const laidOut = layoutTableControls();
+    if (!laidOut) return [];
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return [];
+    const best = boundaryAt(event);
+    if (!best) return [];
+    return best.buttons;
+  };
+  session.resolveControlsAt = resolveControlsAt;
+
+  // While a control is already on screen the pointer is allowed to travel to it. Without this
+  // the button vanishes in the last few pixels of the approach, because the pointer has left
+  // the narrow band that revealed it, and the press lands on the table instead.
+  const holdRevealedControls = (event) => {
+    if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) return false;
+    for (const button of session.visibleControls || []) {
+      if (!button.isConnected) continue;
+      const rect = button.getBoundingClientRect();
+      const pad = TABLE_BOUNDARY_TOLERANCE;
+      if (event.clientX >= rect.left - pad && event.clientX <= rect.right + pad &&
+        event.clientY >= rect.top - pad && event.clientY <= rect.bottom + pad) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const updateFromEvent = (event) => {
+    if (holdRevealedControls(event)) return;
+    showTableControls(session, resolveControlsAt(event));
+  };
+
+  // The listener belongs on the widget root, not on <table>: the controls live in the gutters
+  // the root reserves outside the table, so table-level events never fire on the way to them
+  // and the revealed control would vanish before it could be pressed. The root only exists
+  // once the widget is built, so `toDOM` calls back into this.
+  session.bindControlTracking = (root) => {
+    root.addEventListener('mousemove', (event) => {
+      // One frame in flight at a time, always resolving the newest pointer position. A stale
+      // frame must not run after a newer one, or it would reveal the wrong boundary.
+      if (session.controlFrame) cancelAnimationFrame(session.controlFrame);
+      const point = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        target: event.target,
+      };
+      session.controlFrame = requestAnimationFrame(() => {
+        session.controlFrame = 0;
+        updateFromEvent(point);
+      });
+    });
+    root.addEventListener('mouseleave', () => {
+      if (session.controlFrame) {
+        cancelAnimationFrame(session.controlFrame);
+        session.controlFrame = 0;
+      }
+      showTableControls(session, []);
+    });
+  };
+
+  // The action runs on mousedown, not click: CodeMirror re-renders the widget while the
+  // pointer is down, which detaches this button before a click could ever be delivered.
+  const activate = (button) => {
+    const result = runTableControl(session, button.dataset.tableAction, Number(button.dataset.tableIndex));
+    performanceStats.lastTableControlResult = {
+      action: button.dataset.tableAction,
+      index: Number(button.dataset.tableIndex),
+      result,
+      source: 'control',
+    };
+  };
+  // Capture phase matters: the host editor runs widget mousedown handling on the content
+  // element and stops propagation, so a bubble listener on the layer would never fire.
+  // This is a safety net only; activation is bound on the widget root, because CodeMirror
+  // can keep showing a table whose own controls layer is no longer the live one.
+  layer.addEventListener('mousedown', (event) => {
+    const button = event.target instanceof Element
+      ? event.target.closest('button[data-table-action]')
+      : null;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!button) return;
+    activate(button);
+  }, true);
+  layer.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const button = event.target instanceof Element
+      ? event.target.closest('button[data-table-action]')
+      : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activate(button);
+  });
+  table.appendChild(layer);
+  return { layer, activate };
+};
+
+// Control activation is bound on the document in the capture phase. Table widgets are
+// rebuilt while the pointer is down, which can detach the button before a click, and the
+// host editor stops propagation on the content element; document capture sees every
+// control press no matter which table DOM is currently mounted.
+// Control activation is bound on the document in the capture phase. Table widgets are
+// rebuilt while the pointer is down, which can detach the button before a click, and the
+// host editor stops propagation on the content element; document capture sees every
+// control press no matter which table DOM is currently mounted. `pointerdown` is used
+// because it arrives before any widget re-render can swallow the press.
+const bindTableControlActivation = (editorView) => {
+  const activateFromEvent = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return false;
+    const button = target.closest('button[data-table-action]');
+    if (!button || !editorView.dom.contains(button)) return false;
+    const session = tableSession;
+    if (!session) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const result = runTableControl(session, button.dataset.tableAction, Number(button.dataset.tableIndex));
+      performanceStats.lastTableControlResult = {
+        action: button.dataset.tableAction,
+        index: Number(button.dataset.tableIndex),
+        result,
+        source: 'document',
+      };
+    } catch (error) {
+      performanceStats.lastTableControlResult = {
+        action: button.dataset.tableAction,
+        source: 'error',
+        message: String(error && error.message || error),
+      };
+    }
+    return true;
+  };
+  editorView.dom.ownerDocument.addEventListener('pointerdown', activateFromEvent, true);
+  editorView.dom.ownerDocument.addEventListener('mousedown', activateFromEvent, true);
+  editorView.dom.ownerDocument.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest('button[data-table-action]');
+    if (!button || !editorView.dom.contains(button) || !tableSession) return;
+    event.preventDefault();
+    event.stopPropagation();
+    runTableControl(tableSession, button.dataset.tableAction, Number(button.dataset.tableIndex));
+  }, true);
+};
+
+const runTableControl = (session, action, index) => {
+  const editorView = view;
+  if (!editorView || !session) return false;
+  flushTableSession(session);
+  const blocks = editorView.state.field(documentBlockPreview).blocks;
+  const block = blocks.find((entry) => entry.type === 'table' && entry.from === session.from) ||
+    blocks.find((entry) => entry.type === 'table' && entry.from <= session.to && entry.to >= session.from);
+  if (!block) return false;
+  const model = tableModelOf(block);
+  const transform = TABLE_CONTROL_ACTIONS[action];
+  if (!transform) return false;
+  try {
+    if (action === 'deleteTable') {
+      const after = editorView.state.doc.lineAt(Math.min(editorView.state.doc.length, block.to)).to;
+      const trailing = editorView.state.sliceDoc(after, Math.min(editorView.state.doc.length, after + 2)) === '\n\n'
+        ? 2
+        : editorView.state.sliceDoc(after, Math.min(editorView.state.doc.length, after + 1)) === '\n'
+          ? 1
+          : 0;
+      tableSession = null;
+      editorView.dispatch({
+        changes: { from: block.from, to: after + trailing, insert: '' },
+      });
+      return true;
+    }
+    const next = transform(model, index);
+    if (!next) return false;
+    return replaceTableInDocument(session, next);
+  } catch (error) {
+    performanceStats.lastTableControlError = String(error && error.message || error);
+    return false;
+  }
+};
 
 class ImageWidget extends WidgetType {
   constructor(alt, url, from, to) {
@@ -1269,7 +2330,7 @@ const parseDocument = (state, budget = 8, upto = state.doc.length) => {
   return tree;
 };
 
-const documentBlockDecoration = (block) => {
+const documentBlockDecoration = (block, session = null) => {
   const widget = block.type === 'math'
     ? new MathWidget(block.source, block.from, block.to, true)
     : block.type === 'inlineMath'
@@ -1277,13 +2338,7 @@ const documentBlockDecoration = (block) => {
     : block.type === 'code'
       ? new CodeBlockWidget(block.source, block.language, block.from, block.to)
       : block.type === 'table'
-        ? new TableWidget(
-          block.headers,
-          block.alignments,
-          block.rows,
-          block.from,
-          block.to,
-        )
+        ? new TableWidget(block, block.from, block.to, session)
         : new ImageWidget(block.alt, block.url, block.from, block.to);
   return Decoration.replace({
     widget,
@@ -1291,35 +2346,72 @@ const documentBlockDecoration = (block) => {
   }).range(block.from, block.to);
 };
 
-const shouldPreviewBlock = (state, block, editingBlock) =>
-  !intersectsSelection(state, block.from, block.to) &&
-  !(editingBlock && block.from === editingBlock.from && block.to === editingBlock.to);
+// Tables stay in table view no matter where the cursor or the selection is, so in-place
+// editing never collapses the table back into Markdown source. The only way to see a
+// table's Markdown is the explicit "edit table source" command, which sets the table as
+// the editing block on purpose.
+const shouldPreviewBlock = (state, block, editingBlock) => {
+  const editingMatch = Boolean(editingBlock &&
+    block.from === editingBlock.from && block.to === editingBlock.to);
+  if (block.type === 'table') return !editingMatch;
+  return !intersectsSelection(state, block.from, block.to) && !editingMatch;
+};
+
+const resolveBlockSession = (block) => {
+  const live = tableSession;
+  if (live && live.live && live.element &&
+    block.from <= live.to && block.to >= live.from) {
+    live.from = block.from;
+    live.to = block.to;
+    live.model = block;
+    return live;
+  }
+  return {
+    id: (tableSession?.id || 0) + 1,
+    live: false,
+    element: null,
+    node: null,
+    model: block,
+    structure: 0,
+    from: block.from,
+    to: block.to,
+    dirty: false,
+    pending: null,
+    pendingFocus: null,
+    commitTimer: 0,
+    focused: false,
+  };
+};
+
+const collectBlockWidgets = (state, blocks, editingBlock, filter) => {
+  const widgets = [];
+  for (const block of blocks) {
+    if (!filter(block) || !shouldPreviewBlock(state, block, editingBlock)) continue;
+    const session = block.type === 'table' ? resolveBlockSession(block) : null;
+    widgets.push(documentBlockDecoration(block, session));
+  }
+  return widgets;
+};
 
 const buildDocumentBlockDecorations = (state, blocks, editingBlock) => {
-  const decorations = [];
-  for (const block of blocks) {
-    if (shouldPreviewBlock(state, block, editingBlock)) {
-      decorations.push(documentBlockDecoration(block));
-    }
-  }
+  const widgets = collectBlockWidgets(state, blocks, editingBlock, () => true);
   performanceStats.documentBlocks = blocks.length;
   performanceStats.documentBlockTypes = blocks.reduce((counts, block) => ({
     ...counts,
     [block.type]: (counts[block.type] || 0) + 1,
   }), {});
-  return Decoration.set(decorations, true);
+  return Decoration.set(widgets, true);
 };
 
 const updateDocumentBlockDecorations = (state, blocks, editingBlock, previous, ranges) => {
   const relevant = ranges.filter((range) => range.to >= range.from);
   if (!relevant.length) return previous;
-  const additions = [];
-  for (const block of blocks) {
-    if (relevant.some((range) => block.from <= range.to && block.to >= range.from) &&
-      shouldPreviewBlock(state, block, editingBlock)) {
-      additions.push(documentBlockDecoration(block));
-    }
-  }
+  const additions = collectBlockWidgets(
+    state,
+    blocks,
+    editingBlock,
+    (block) => relevant.some((range) => block.from <= range.to && block.to >= range.from),
+  );
   return previous.update({
     filter(from, to) {
       return !relevant.some((range) => from <= range.to && to >= range.from);
@@ -1378,7 +2470,7 @@ const documentBlockPreview = StateField.define({
     if (transaction.docChanged && editingBlock) {
       const from = transaction.changes.mapPos(editingBlock.from, 1);
       const to = transaction.changes.mapPos(editingBlock.to, -1);
-      editingBlock = findOverlappingBlock(blocks, from, to);
+      editingBlock = findEditableBlock(blocks, from, to);
       if (editingBlock && !(editingBlock.from <= from && editingBlock.to >= to)) editingBlock = null;
     }
     if (editingBlock && transaction.selection && !pointerGesture &&
@@ -1389,7 +2481,7 @@ const documentBlockPreview = StateField.define({
     for (const effect of transaction.effects) {
       if (effect.is(editingBlockUpdate)) {
         editingBlock = effect.value
-          ? findOverlappingBlock(blocks, effect.value.from, effect.value.to)
+          ? findBlockAt(blocks, effect.value.from, effect.value.to)
           : null;
         if (editingBlock && (editingBlock.from !== effect.value.from || editingBlock.to !== effect.value.to)) {
           editingBlock = null;
@@ -1398,7 +2490,7 @@ const documentBlockPreview = StateField.define({
     }
     if (!editingBlock && transaction.docChanged) {
       const selection = transaction.state.selection.main;
-      editingBlock = findOverlappingBlock(blocks, selection.from, selection.to);
+      editingBlock = findEditableBlock(blocks, selection.from, selection.to);
       if (editingBlock && !intersectsSelection(transaction.state, editingBlock.from, editingBlock.to)) {
         editingBlock = null;
       }
@@ -1458,6 +2550,7 @@ const buildVisibleDecorations = (view) => {
   const cursor = view.state.selection.main;
   const inlineAncestors = new Set(['InlineCode', 'Emphasis', 'StrongEmphasis', 'Link']);
   const hiddenSyntax = new Set(['CodeMark', 'EmphasisMark', 'LinkMark', 'URL']);
+  const strongDelimiterPattern = /\*\*(?=\S)([\s\S]*?\S)\*\*/g;
   const ancestorFor = (node) => {
     let current = tree.resolve(node.from, -1);
     while (current) {
@@ -1483,6 +2576,15 @@ const buildVisibleDecorations = (view) => {
       from: range.from,
       to: range.to,
       enter(node) {
+        // The ATX marker is collapsed rather than merely hidden: leaving its width in place
+        // would draw the heading underline under empty space.
+        if (node.name === 'HeaderMark') {
+          const line = view.state.doc.lineAt(node.from);
+          if (/^(#{1,6})\s/.test(line.text)) {
+            decorations.push(Decoration.replace({}).range(node.from, node.to + 1));
+          }
+          return false;
+        }
         if (/^ATXHeading[1-6]$/.test(node.name)) {
           const line = view.state.doc.lineAt(node.from);
           const marker = /^(#{1,6})\s+/.exec(line.text);
@@ -1501,6 +2603,12 @@ const buildVisibleDecorations = (view) => {
         }
         if (hiddenSyntax.has(node.name)) {
           const parent = ancestorFor(node);
+          if (parent?.name === 'StrongEmphasis') return;
+          if (node.name === 'EmphasisMark' && (
+            view.state.sliceDoc(node.from, node.to) === '**' ||
+            view.state.sliceDoc(Math.max(0, node.from - 1), node.from) === '*' ||
+            view.state.sliceDoc(node.to, Math.min(view.state.doc.length, node.to + 1)) === '*'
+          )) return;
           if (!cursorInside(parent)) {
             decorations.push(Decoration.mark({
               class: 'paper-reader-cm-mark-hidden',
@@ -1509,6 +2617,29 @@ const buildVisibleDecorations = (view) => {
         }
       },
     });
+
+    strongDelimiterPattern.lastIndex = 0;
+    let strongMatch;
+    while ((strongMatch = strongDelimiterPattern.exec(range.text))) {
+      const from = range.from + strongMatch.index;
+      const to = from + strongMatch[0].length;
+      if (isInsideAnyBlock(documentBlocks, from, to)) continue;
+      const startNode = tree.resolve(from + 1, -1);
+      let inlineCode = false;
+      for (let current = startNode; current; current = current.parent) {
+        if (current.name === 'InlineCode') {
+          inlineCode = true;
+          break;
+        }
+      }
+      if (inlineCode) continue;
+      decorations.push(Decoration.mark({
+        class: 'paper-reader-cm-mark-hidden',
+      }).range(from, from + 2));
+      decorations.push(Decoration.mark({
+        class: 'paper-reader-cm-mark-hidden',
+      }).range(to - 2, to));
+    }
 
     superscriptPattern.lastIndex = 0;
     let match;
@@ -1734,6 +2865,7 @@ const showMenu = (event) => {
 const scheduleSave = () => {
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(() => {
+    flushTableSession(tableSession);
     handler.emit('save', normalizeDisplayMathDelimiters(view.state.doc.toString()));
   }, 120);
 };
@@ -1741,6 +2873,7 @@ const scheduleSave = () => {
 const saveNow = () => {
   if (!view) return;
   window.clearTimeout(saveTimer);
+  flushTableSession(tableSession);
   const content = normalizeDisplayMathDelimiters(view.state.doc.toString());
   handler.emit('doSave', content);
 };
@@ -1852,6 +2985,19 @@ const cycleHeading = () => {
   setHeadingLevel(current ? (current[1].length % 6) + 1 : 1);
 };
 
+const clearEmptyHeading = () => {
+  if (!view) return false;
+  const selection = view.state.selection.main;
+  if (!selection.empty) return false;
+  const line = view.state.doc.lineAt(selection.head);
+  if (!/^#{1,6}[ \t]+$/.test(line.text) || selection.head !== line.to) return false;
+  view.dispatch({
+    changes: { from: line.from, to: line.to, insert: '' },
+    selection: { anchor: line.from },
+  });
+  return true;
+};
+
 const renderOutline = () => {
   if (!view || !outline || outline.hidden) return;
   const fragment = document.createDocumentFragment();
@@ -1915,6 +3061,9 @@ const runToolbarCommand = (command) => {
         tablePanel.querySelector('input[data-table-size="rows"]')?.focus();
       }
       break;
+    case 'table-source':
+      editTableSource();
+      break;
     case 'math': insertBlock('$$\nformula\n$$', 3, 7); break;
     case 'image': replaceSelection('![', '](assets/image.png)', 'alt'); break;
     case 'font-sizes':
@@ -1976,6 +3125,8 @@ tablePanel?.addEventListener('click', (event) => {
 });
 
 const createView = (payload) => {
+  window.paperReaderMarkdownVersion = payload.extensionVersion || 'unknown';
+  document.documentElement.dataset.paperReaderVersion = window.paperReaderMarkdownVersion;
   applyFontSizes(payload.config?.fontSizes);
   const shortcut = (command) => () => {
     runToolbarCommand(command);
@@ -1985,6 +3136,7 @@ const createView = (payload) => {
     history(),
     search({ top: true }),
     Prec.highest(keymap.of([
+      { key: 'Backspace', run: clearEmptyHeading },
       { key: 'Mod-Shift-1', run: () => { setHeadingLevel(1); return true; } },
       { key: 'Mod-Shift-2', run: () => { setHeadingLevel(2); return true; } },
       { key: 'Mod-Shift-3', run: () => { setHeadingLevel(3); return true; } },
@@ -2006,6 +3158,13 @@ const createView = (payload) => {
     livePreview,
     EditorView.lineWrapping,
     EditorView.updateListener.of((update) => {
+      // Keep the reported selection current for every transaction. Visible-decoration
+      // passes also record it, but they do not run for every selection change, so
+      // diagnostics and tests must not depend on when that pass last happened.
+      const main = update.state.selection.main;
+      performanceStats.selectionFrom = main.from;
+      performanceStats.selectionTo = main.to;
+      performanceStats.selectionText = update.state.sliceDoc(main.from, main.to);
       if (cursorDiagnosticActive && update.selectionSet) {
         diagnosticRecord({
           kind: 'selection-transaction',
@@ -2033,9 +3192,21 @@ const createView = (payload) => {
     EditorView.theme({
       '&': { height: '100%', backgroundColor: 'var(--vscode-editor-background)' },
       '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--vscode-editor-font-family)' },
-      '.cm-content': { padding: '18px 24px', minHeight: '100%' },
+      '.cm-content': {
+        padding: '18px 24px',
+        minHeight: '100%',
+        width: '100%',
+        minWidth: '100%',
+        boxSizing: 'border-box',
+      },
       '.cm-gutters': { backgroundColor: 'var(--vscode-editor-background)', border: 'none' },
-      '.cm-line': { maxWidth: '1100px', margin: '0 auto' },
+      '.cm-line': {
+        width: '100%',
+        minWidth: '100%',
+        maxWidth: 'none',
+        margin: '0',
+        boxSizing: 'border-box',
+      },
       '.cm-activeLine': { backgroundColor: 'transparent' },
       '.cm-selectionBackground, ::selection': { backgroundColor: 'var(--vscode-editor-selectionBackground)' },
     }),
@@ -2044,6 +3215,7 @@ const createView = (payload) => {
     state: EditorState.create({ doc: normalizeDisplayMathDelimiters(payload.content || ''), extensions }),
     parent: root,
   });
+  bindTableControlActivation(view);
   for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
     window.addEventListener(type, (event) => diagnosticEvent(event, 'capture'), true);
     window.addEventListener(type, (event) => diagnosticEvent(event, 'bubble'), false);
@@ -2082,6 +3254,14 @@ const createView = (payload) => {
     const from = Number(node.dataset.from);
     const to = Number(node.dataset.to);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+    const tableCell = event.target instanceof Element
+      ? event.target.closest('.paper-reader-cm-cell')
+      : null;
+    if (tableCell) {
+      // Leave the cell mousedown alone so the browser can place and drag the caret inside
+      // the cell. The activation handler only takes over the editor selection.
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
   };
@@ -2224,7 +3404,11 @@ handler.on('cursorDiagnosticStop', () => {
   cursorDiagnosticRecords = [];
 });
 handler.on('update', (content) => {
-  if (!view || view.state.doc.toString() === content) return;
+  if (!view) return;
+  // Pending cell text is only in the DOM; flush it before comparing with the host copy
+  // so an in-flight update can never drop the user's typing.
+  flushTableSession(tableSession);
+  if (view.state.doc.toString() === content) return;
   const next = normalizeDisplayMathDelimiters(content);
   const change = computeMinimalTextChange(view.state.doc.toString(), next);
   if (!change) return;
@@ -2254,4 +3438,185 @@ handler.on('gotoBlock', (fragment) => {
   const index = view.state.doc.toString().indexOf(fragment);
   if (index >= 0) view.dispatch({ selection: { anchor: index }, scrollIntoView: true });
 });
+
+const tableBlockForSelection = (editorView) => {
+  if (!editorView) return null;
+  const selection = editorView.state.selection.main;
+  const blocks = editorView.state.field(documentBlockPreview).blocks;
+  return blocks.find((block) => block.type === 'table' &&
+    block.from <= selection.from && block.to >= selection.to) ||
+    blocks.find((block) => block.type === 'table' &&
+      block.from <= selection.head && block.to >= selection.head) ||
+    null;
+};
+
+// Explicit escape hatch: Markdown source for a table is still reachable, it is just no
+// longer a side effect of clicking or selecting inside the table.
+const editTableSource = () => {
+  if (!view) return false;
+  const block = tableBlockForSelection(view);
+  if (!block) return false;
+  flushTableSession(tableSession, { force: true });
+  tableSession = null;
+  view.dispatch({
+    effects: editingBlockUpdate.of({ from: block.from, to: block.to }),
+    selection: { anchor: block.from },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+};
+
+// Read-only hooks used by the browser regression suite for live table editing.
+Object.defineProperties(performanceStats, {
+  tableRows: {
+    get: () => {
+      const session = tableSession;
+      const block = view && session
+        ? view.state.field(documentBlockPreview).blocks.find((entry) =>
+          entry.type === 'table' && entry.from <= session.to && entry.to >= session.from)
+        : null;
+      return block ? [block.headers, ...block.rows] : [];
+    },
+  },
+  tableCells: {
+    get: () => {
+      const host = document.querySelector('.paper-reader-cm-table');
+      if (!host) return [];
+      return [...host.querySelectorAll('tr')].map((row) =>
+        [...row.querySelectorAll('.paper-reader-cm-cell')].map((cell) => cell.textContent));
+    },
+  },
+  tableControlCount: {
+    get: () => document.querySelectorAll('.paper-reader-cm-table-controls [data-table-action]').length,
+  },
+  tableSessionState: {
+    get: () => (tableSession ? {
+      id: tableSession.id,
+      from: tableSession.from,
+      to: tableSession.to,
+      structure: tableSession.structure,
+      dirty: tableSession.dirty,
+      live: tableSession.live,
+    } : null),
+  },
+  flushTableCells: {
+    value: () => flushTableSession(tableSession, { force: true }),
+  },
+  tableCellAt: {
+    value: (rowIndex, columnIndex) =>
+      cellHostAt(document.querySelector('.paper-reader-cm-table'), rowIndex, columnIndex),
+  },
+  editTableSource: {
+    value: () => editTableSource(),
+  },
+  tableBlockForSelectionNow: {
+    value: () => {
+      const block = tableBlockForSelection(view);
+      return block ? { from: block.from, to: block.to } : null;
+    },
+  },
+  tableControls: {
+    get: () => [...document.querySelectorAll('.paper-reader-cm-table-controls [data-table-action]')]
+      .map((button) => ({
+        action: button.dataset.tableAction,
+        index: button.dataset.tableIndex,
+        text: button.textContent,
+        visible: button.getBoundingClientRect().width > 0,
+        registered: typeof TABLE_CONTROL_ACTIONS[button.dataset.tableAction] === 'function',
+      })),
+  },
+  runTableControl: {
+    value: (action, index) => {
+      const result = runTableControl(tableSession, action, Number(index || 0));
+      performanceStats.lastTableControlResult = { action, index: Number(index || 0), result };
+      return result;
+    },
+  },
+  lastTableControl: {
+    get: () => performanceStats.lastTableControlResult || null,
+  },
+  visibleTableControl: {
+    get: () => {
+      const button = document.querySelector('.paper-reader-cm-table-control--visible');
+      return button ? button.dataset.tableAction : null;
+    },
+  },
+  visibleTableControls: {
+    get: () => [...document.querySelectorAll('.paper-reader-cm-table-control--visible')]
+      .map((button) => `${button.dataset.tableAction}:${button.dataset.tableIndex}`),
+  },
+  tableControlRects: {
+    get: () => [...document.querySelectorAll('.paper-reader-cm-table-control')].map((button) => {
+      const rect = button.getBoundingClientRect();
+      return {
+        id: `${button.dataset.tableAction}:${button.dataset.tableIndex}`,
+        boundary: button.dataset.boundary || null,
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      };
+    }),
+  },
+  hideTableControls: {
+    value: () => showTableControls(tableSession, []),
+  },
+  resolveTableControlAt: {
+    value: (x, y) => {
+      const session = tableSession;
+      if (!session?.resolveControlsAt) return null;
+      const target = document.elementFromPoint(x, y);
+      const resolved = session.resolveControlsAt({ clientX: x, clientY: y, target })
+        .map((button) => `${button.dataset.tableAction}:${button.dataset.tableIndex}`);
+      return resolved;
+    },
+  },
+  boundaryPoints: {
+    // One probe per zone, at the exact spot the zone is defined around: a row's centre line
+    // (delete row), the junction below a row (insert row), a column's centre (delete column)
+    // and the junction right of a column (insert column). Each carries the action it must
+    // resolve to, so tests can assert placement and meaning together.
+    value: () => {
+      const session = tableSession;
+      if (!session) return [];
+      const table = document.querySelector('.paper-reader-cm-table table') || session.element;
+      if (!table) return [];
+      const headers = [...table.querySelectorAll('thead th .paper-reader-cm-cell')];
+      const rows = [...table.querySelectorAll('tbody tr')];
+      const points = [];
+      rows.forEach((row, index) => {
+        const rect = row.getBoundingClientRect();
+        const middleX = Math.round((rect.left + rect.right) / 2);
+        points.push({ key: `row-${index}`, expect: 'deleteRow', x: middleX, y: Math.round((rect.top + rect.bottom) / 2) });
+        points.push({ key: `row-junction-${index}`, expect: 'insertRow', x: middleX, y: Math.round(rect.bottom) });
+      });
+      headers.forEach((cell, index) => {
+        const rect = cell.getBoundingClientRect();
+        // Probe each control at the exact point it was placed at, so the assertion is about
+        // where the button really is rather than where the geometry suggests it should be.
+        const anchors = session.controlAnchorPoints || {};
+        const probeY = Math.round(rect.top + Math.min(6, rect.height / 2));
+        const deleteAnchor = anchors[`deleteColumn:${index}`];
+        points.push({
+          key: `column-${index}`,
+          expect: 'deleteColumn',
+          x: Math.round(deleteAnchor ? deleteAnchor.x : (rect.left + rect.right) / 2),
+          y: deleteAnchor ? Math.round(deleteAnchor.y) : probeY,
+        });
+        const insertAnchor = anchors[`insertColumn:${index}`] || anchors[`appendColumn:${index}`];
+        if (index < headers.length - 1 && insertAnchor) {
+          points.push({
+            key: `col-junction-${index}`,
+            expect: 'insertColumn',
+            x: Math.round(insertAnchor.x),
+            y: Math.round(insertAnchor.y),
+          });
+        }
+      });
+      return points;
+    },
+  },
+});
+
 handler.emit('init');

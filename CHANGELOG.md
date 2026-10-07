@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0 (2026/10/06)
+
+- Edit Markdown tables in place: click a cell to type, and the table stays rendered instead of collapsing into Markdown source.
+- Place the caret exactly where you click inside a cell, and allow selecting text by dragging inside a cell.
+- Add controls outside the table body for every structural edit: insert or delete a row, insert or delete a column, append a row or column, and delete the table.
+- Sit every control where its meaning reads. The insert control sits on the junction it splits and the delete control on the row or column it removes, both hugging the table: a `+` sits on the column boundary two pixels above the table, a `×` above its column's centre, and the row controls share a lane flush against the table's left edge.
+- Reveal a control only when the pointer is near the boundary it belongs to, always reveal the control being pointed at, and keep it clickable while the pointer travels onto it.
+- Keep every click inside the table widget from reaching the editor, so pressing the thin margin around a table no longer moves the cursor off the table and collapses it into source.
+- Stretch every cell to the full height of its table cell, so the whole box a reader sees belongs to that cell and a click anywhere inside it lands there.
+- Measure a row from its `<tr>` rather than from its first cell, so a row controls stay put when a later column wraps onto another line, and refresh the controls whenever the table's geometry changes.
+- Remove the table card frame and the focus box around the edited cell, so a table looks like a rendered Markdown table again.
+- Commit cell text with a single minimal transaction once typing settles, and reuse the mounted table so focus and the caret survive typing.
+- Hide the ATX heading marker in the rendered view: `## Title` shows as a styled `Title`, while the `#` characters stay in the document and in the saved file.
+- Add table model unit tests covering parse/serialize round trips, empty cells, escaping, alignment and repeated row/column edits, and extend the browser suite with in-place editing, caret placement, drag selection and real-mouse checks for the controls.
+
 ## 1.5.0 (2026/09/23)
 
 - Rebuild the Markdown editor interaction path around CodeMirror 6 as the single source of truth.

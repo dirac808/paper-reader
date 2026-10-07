@@ -606,6 +606,8 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 
 #paper-reader-editor {
     position: relative;
+    grid-column: 2;
+    width: 100%;
     min-width: 0;
     min-height: 0;
     color: var(--vscode-editor-foreground);
@@ -619,9 +621,20 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 #paper-reader-editor .cm-content {
+    width: 100%;
+    min-width: 100%;
+    box-sizing: border-box;
     caret-color: var(--vscode-editorCursor-foreground, currentColor);
     font-size: var(--paper-reader-body-font-size, 14px);
     line-height: 1.6;
+}
+
+#paper-reader-editor .cm-line {
+    width: 100%;
+    min-width: 100%;
+    max-width: none;
+    margin: 0;
+    box-sizing: border-box;
 }
 
 #paper-reader-editor .cm-panels {
@@ -729,8 +742,23 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 }
 
 .paper-reader-cm-mark-hidden {
-    color: transparent;
+    display: inline-block;
+    width: 0;
+    max-width: 0;
+    overflow: hidden;
+    color: transparent !important;
+    font-size: 0;
+    line-height: 0;
+    padding: 0;
+    border: 0;
+    margin: 0;
     user-select: none;
+    vertical-align: baseline;
+}
+
+.paper-reader-cm-mark-hidden * {
+    display: none !important;
+    color: transparent !important;
 }
 
 .paper-reader-cm-script-source {
@@ -755,18 +783,25 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     cursor: text;
 }
 
+/* The table itself carries no chrome: only row/column separators, like a rendered
+   Markdown table. The padding is the widget's own box — the table is inset into it — so the
+   strip the controls live in still belongs to the table: a press there cannot move focus out
+   and collapse the table into source. It is kept to one control plus a hair of clearance,
+   because every extra pixel is a blank strip that looks like part of the table but is not. */
 .paper-reader-cm-table {
+    position: relative;
     box-sizing: border-box;
-    width: min(100%, 1100px);
-    margin: 14px auto;
-    overflow-x: auto;
-    border: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.35));
-    border-radius: 4px;
+    width: min(100%, 1196px);
+    margin: 4px auto 12px;
+    padding: 31px 22px 0 calc(22px + var(--paper-reader-table-gutter, 0px));
+    overflow: visible;
     cursor: text;
 }
 
 .paper-reader-cm-table table {
     width: 100%;
+    min-width: 0;
+    margin: 0;
     border-collapse: collapse;
     color: var(--vscode-editor-foreground);
     background: var(--vscode-editor-background);
@@ -776,16 +811,38 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-table th,
 .paper-reader-cm-table td {
     min-width: 90px;
-    padding: 7px 10px;
+    padding: 0;
     border-right: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.25));
     border-bottom: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.25));
-    vertical-align: top;
     text-align: left;
+}
+
+/* The editable host has to be a child element: CodeMirror forces the widget root to
+   contenteditable=false, and the cell itself holds focus while the table stays rendered.
+   The th/td must not set `vertical-align: top`: that shrink-wraps the host, leaving dead space
+   beside a row's taller neighbour. The remaining dead space is closed by the layout pass, which
+   stretches each host to its row's height. */
+.paper-reader-cm-cell {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 1.6em;
+    padding: 7px 10px;
+    outline: none;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    caret-color: var(--vscode-editorCursor-foreground, auto);
+}
+
+.paper-reader-cm-cell:focus {
+    background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.1));
+}
+
+.paper-reader-cm-table th .paper-reader-cm-cell {
+    font-weight: 600;
 }
 
 .paper-reader-cm-table th {
-    font-weight: 600;
     background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.12));
 }
 
@@ -798,8 +855,45 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     border-right: 0;
 }
 
-.paper-reader-cm-table:hover {
+/* Boundary controls live in the widget's own margins: a band above the header for columns,
+   and the left margin for rows. They are in the DOM but invisible and inert until the
+   pointer reaches the boundary they belong to. The layer is a later sibling of the <table>
+   so it paints above the table content. */
+.paper-reader-cm-table-controls {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.paper-reader-cm-table-control {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: 1px solid var(--vscode-panel-border, rgba(127, 127, 127, 0.45));
+    border-radius: 3px;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-descriptionForeground, #888);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.08s ease-in;
+}
+
+.paper-reader-cm-table-control--visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.paper-reader-cm-table-control:hover {
     border-color: var(--vscode-focusBorder);
+    color: var(--vscode-editor-foreground);
 }
 
 .paper-reader-cm-heading-1,

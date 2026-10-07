@@ -20,6 +20,7 @@ type MarkdownSelectionAnchor = {
 
 type MarkdownOpenPayload = {
   content: string;
+  extensionVersion: string;
   rootPath: string;
   documentBasePath: string;
   documentCacheId: string;
@@ -54,6 +55,23 @@ function getUriFolder(uri: vscode.Uri): vscode.Uri {
   return vscode.Uri.file(path.dirname(uri.fsPath));
 }
 
+const resourceVersionCache = new Map<string, string>();
+
+function getResourceVersion(resourcePath: string): string {
+  const stat = fs.statSync(resourcePath);
+  const cacheKey = `${resourcePath}:${stat.size}:${stat.mtimeMs}`;
+  const cached = resourceVersionCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const version = createHash('sha1')
+    .update(fs.readFileSync(resourcePath))
+    .digest('hex')
+    .slice(0, 12);
+  resourceVersionCache.set(cacheKey, version);
+  return version;
+}
+
 function rewriteResourcePaths(
   html: string,
   webview: vscode.Webview,
@@ -66,7 +84,14 @@ function rewriteResourcePaths(
       const target = vscode.Uri.file(
         path.normalize(path.join(resourceRoot.fsPath, normalized))
       );
-      return `${prefix}${webview.asWebviewUri(target)}${suffix}`;
+      const resourceUri = webview.asWebviewUri(target).toString();
+      let versionedUri = resourceUri;
+      try {
+        versionedUri = `${resourceUri}?v=${getResourceVersion(target.fsPath)}`;
+      } catch {
+        // Preserve the original URI for optional resources that are absent.
+      }
+      return `${prefix}${versionedUri}${suffix}`;
     }
   );
 }
@@ -327,9 +352,14 @@ export class MarkdownWysiwygProvider
     const emit = (type: string, messageContent?: unknown): void => {
       void webview.postMessage({ type, content: messageContent });
     };
+    const extensionVersion = String(
+      vscode.extensions.getExtension('paper-reader-lab.paper-reader')
+        ?.packageJSON?.version || 'unknown'
+    );
 
     const openPayload = (): MarkdownOpenPayload => ({
       content,
+      extensionVersion,
       rootPath: webview
         .asWebviewUri(getMarkdownResourceRoot(this.context))
         .toString(),
