@@ -4,7 +4,7 @@ Paper Reader 是面向科研论文的 VS Code 阅读与编辑插件：阅读 PDF
 
 **MinerU 文档识别是核心功能之一。** Paper Reader 作为它在 VS Code 中的前端，负责选择论文、提供解析选项、启动本地解析或上传远端任务、展示进度、接收 Markdown 与图片、保存结果并衔接翻译和编辑。模型推理由独立部署的 MinerU 完成，VSIX 不包含 Python 环境或 MinerU 模型。
 
-当前稳定版：`1.5.5`（本地修复版）。历史 bug、根因、五阶段重构与测试记录集中在 [log.md](log.md)。
+当前稳定版：`1.6.0`。历史 bug、根因、五阶段重构与测试记录集中在 [log.md](log.md)。
 
 ## 目录
 
@@ -19,15 +19,17 @@ Paper Reader 是面向科研论文的 VS Code 阅读与编辑插件：阅读 PDF
 - [AI 翻译配置](#ai-翻译配置)
 - [自检与使用排查](#自检与使用排查)
 - [PDF、Markdown、笔记与 Codex](#pdfmarkdown笔记与-codex)
+- [Markdown 编辑器](#markdown-编辑器)
 - [开发与验证](#开发与验证)
 - [实现依据与上游文档](#实现依据与上游文档)
+- [文档索引](#文档索引)
 
 ## 安装与开始使用
 
-1. 从 Release 下载 `paper-reader-1.5.5.vsix`，在 VS Code 扩展面板选择 **Install from VSIX...**，或执行：
+1. 从 [Release](https://github.com/dirac808/paper-reader/releases/latest) 下载 `paper-reader-1.6.0.vsix`，在 VS Code 扩展面板选择 **Install from VSIX...**，或执行：
 
    ```bash
-   code --install-extension paper-reader-1.5.5.vsix --force
+   code --install-extension paper-reader-1.6.0.vsix --force
    ```
 
 2. 更新安装后执行 `Developer: Reload Window`。
@@ -380,6 +382,40 @@ API 密钥也可通过启动 VS Code 时的环境变量提供，读取顺序是 
 - **笔记：** `Paper Reader: Add Note`、`Paper Reader: Open Notes`，可将阅读选区整理为 Markdown 笔记，并查看知识图谱。
 - **Codex 联动：** PDF、Markdown 和普通代码选区可经命令发送到官方 `openai.chatgpt` 扩展。需单独安装该扩展；Paper Reader 使用公开命令及文档桥接，不依赖闭源内部 API。
 
+## Markdown 编辑器
+
+`Paper Reader: Open Markdown` 打开的是一个**块级实时预览**编辑器：正文、标题、引用、代码块、公式和表格都按渲染结果呈现，同时保留原文——你看到的是排版，存盘的是 Markdown。
+
+### 表格原地编辑
+
+表格不再需要切到源码。光标进入表格即可直接编辑，表格始终保持渲染状态。
+
+**编辑单元格**
+
+- 点击任意单元格，光标落在**你点击的位置**，不是单元格开头。
+- 在单元格内按住拖动可以**选中文字**。
+- 输入后停顿约 350ms，或按 `Enter` / `Tab` / `Esc`，或点击别处，改动才会提交为一次最小化的文档修改。因此连续输入只产生一次编辑事务，光标不会被打断。
+- 单元格内容按纯文本处理：单元格里写的行内 Markdown（如 `` `code` ``）会原样显示，不会被渲染成富文本。
+
+**结构编辑按钮**
+
+表格外侧会出现结构编辑按钮，**只在指针靠近对应边界时显示**；指针移到按钮上时按钮保持可见可点。
+
+| 按钮 | 位置 | 作用 |
+| --- | --- | --- |
+| `+`（行） | 两行交界处，紧贴表格左侧 | 在这两行**之间**插入一行 |
+| `×`（行） | 该行正左侧，与行的中线对齐 | 删除这一行 |
+| `+`（列） | 两列交界处，紧贴表格上沿 | 在这两列**之间**插入一列 |
+| `×`（列） | 该列正中间上方，与 `+` 同一条水平带 | 删除这一列 |
+| `+`（表格末端） | 最后一行下方 / 最后一列右侧 | 追加一行 / 一列 |
+| `×`（表格末端） | 最后一行左侧 | 删除整张表格 |
+
+行的两个按钮共用一条紧贴表格左边缘的竖向通道；列的两个按钮共用一条表格上沿的水平带——**四个按钮都紧贴表格**，不悬空。
+
+**源码切换**
+
+需要手工调整表格 Markdown 时，用工具栏的表格源码按钮或 `Paper Reader: Normalize Markdown Math` 等命令显式进入源码编辑；光标或选区在表格中移动**不会**导致表格退回源码。
+
 ## 开发与验证
 
 在本仓库根目录执行：
@@ -396,23 +432,66 @@ npm run build:markdown
 npm run package
 ```
 
-基础质量检查：
+### 质量检查
+
+| 命令 | 覆盖范围 | 需要浏览器 |
+| --- | --- | --- |
+| `npm run compile` | TypeScript 编译 | 否 |
+| `npm run lint` | ESLint（`src/**.ts`） | 否 |
+| `npm run test:docs` | 文档一致性：链接、锚点、命令名、版本号（已包含在 `test:unit` 中） | 否 |
+| `npm run test:unit` | 表格模型单测 + 扩展单元测试 + 文档一致性 | 否 |
+| `npm run test:performance` | 静态性能守卫（字符串断言） | 否 |
+| `npm run test:markdown-performance` | 编辑器长文档运行时性能 | 是 |
+| `npm run test:markdown-selection` | 编辑器浏览器回归套件 | 是 |
+| `npm test` | VS Code 集成测试（下载/使用 VS Code 实例） | 否 |
+
+一次跑完除集成测试外的全部检查：
 
 ```bash
-npm run compile
-npm run lint
-npm run test:unit
-npm run test:performance
-npm run test:markdown-performance
-npm run test:markdown-selection
-npm test
+npm run compile && npm run lint && npm run test:unit && npm run test:performance
+npm run test:markdown-performance && npm run test:markdown-selection
 ```
 
-Windows 集成测试可用 `VSCODE_TEST_EXECUTABLE` 指定实际 `Code.exe` 路径。两个 performance 脚本包含静态守卫；需要浏览器长文档运行时检查时，设置 `HEADING_SELECTION_LONG=true` 后执行 `npm run test:markdown-selection`。真实论文 fixture、字符级扫描和历史验证限制见 [log.md](log.md)。这些编辑器测试不等同于真实 MinerU/GPU/翻译服务的端到端验证。
+### 三项容易踩错的细节
+
+**1. 浏览器路径。** 两个浏览器测试用 CDP 驱动 Chromium，需要指向本机浏览器：
+
+```bash
+# Git Bash
+export CHROME_PATH="/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+npm run test:markdown-selection
+```
+
+```powershell
+# PowerShell
+$env:CHROME_PATH = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+npm run test:markdown-selection
+```
+
+**2. 长文档与方向变体。** 默认跑短文档；下面两个环境变量分别覆盖长文档和反向拖选：
+
+```bash
+HEADING_SELECTION_LONG=true npm run test:markdown-selection
+HEADING_SELECTION_DIRECTION=reverse npm run test:markdown-selection
+```
+
+**3. 已安装包校验。** `scripts/checkInstalledExtension.js` 不是 npm script，直接运行，用于校验**装好的**扩展而不是源码——它跑 17 项检查（控件位置、单泳道、单元格撑满、点边距不塌陷、真实鼠标点击等），并核对安装目录里的 bundle：
+
+```bash
+node scripts/checkInstalledExtension.js
+```
+
+Windows 集成测试可用 `VSCODE_TEST_EXECUTABLE` 指定实际 `Code.exe` 路径。
+
+### 编辑器改动的注意事项
+
+改动 `media/markdown/codemirror-entry.js` 或 `media/markdown/index.css` 后**必须**执行 `npm run build:markdown`，因为 webview 实际加载的是打包产物 `media/markdown/codemirror.bundle.js`。两个 performance 脚本同时充当**静态守卫**，以字符串断言锁定关键实现（控件尺寸与泳道公式、控件几何只在挂载后测量等）；重构这些代码时需要同步更新守卫，否则会因断言失配而失败。
+
+真实论文 fixture、字符级扫描和历史验证限制见 [log.md](log.md)。这些编辑器测试不等同于真实 MinerU/GPU/翻译服务的端到端验证。
 
 ## 实现依据与上游文档
 
-本文于 **2026-09-26** 按当前插件实现及本地 `MinerU` 源码核对。上游参考快照为 **3.4.0，提交 `3e602918`（2026-06-18）**；本地目录为 `E:\Desktop\repo\paper-reader\MinerU`，仅是本次参考位置，使用插件无需克隆到此路径。此版本说明不是对 GitHub 最新版本的声明；升级上游时先检查 CLI 参数与 API 协议兼容性。
+本文于 **2026-10-07** 按当前插件实现（`1.6.0`）及本地 `MinerU` 源码核对。上游参考快照为 **3.4.0，提交 `3e602918`（2026-06-18）**；本地目录为 `E:\Desktop\repo\paper-reader\MinerU`，仅是本次参考位置，使用插件无需克隆到此路径。此版本说明不是对 GitHub 最新版本的声明；升级上游时先检查 CLI 参数与 API 协议兼容性。
 
 | 实现文件 | 职责 |
 | --- | --- |
@@ -422,7 +501,12 @@ Windows 集成测试可用 `VSCODE_TEST_EXECUTABLE` 指定实际 `Code.exe` 路�
 | [package.json](package.json) | 用户命令、设置项、默认值与枚举 |
 | [src/diagnostics.ts](src/diagnostics.ts) | 本地 CLI 与 API 自检 |
 | [src/deepSeekClient.ts](src/deepSeekClient.ts) | Markdown 内容保护与批次翻译 |
-| [src/markdownWysiwygProvider.ts](src/markdownWysiwygProvider.ts)、[media/markdown/codemirror-entry.js](media/markdown/codemirror-entry.js) | Markdown 编辑器与实时预览 |
+| [src/markdownWysiwygProvider.ts](src/markdownWysiwygProvider.ts) | Markdown 编辑器宿主：webview、命令、源码切换 |
+| [media/markdown/codemirror-entry.js](media/markdown/codemirror-entry.js) | 编辑器实现：实时预览、公式、表格原地编辑与结构控件 |
+| [media/markdown/tableModel.js](media/markdown/tableModel.js) | 表格模型：解析、序列化、增删行列（纯函数，可单测） |
+| [media/markdown/index.css](media/markdown/index.css) | 编辑器与表格外观 |
+| [scripts/checkInstalledExtension.js](scripts/checkInstalledExtension.js) | 已安装扩展的 17 项端到端校验 |
+| [scripts/checkDocs.js](scripts/checkDocs.js) | 文档一致性校验（链接、锚点、命令名、版本号） |
 
 上游参考：
 
@@ -434,6 +518,19 @@ Windows 集成测试可用 `VSCODE_TEST_EXECUTABLE` 指定实际 `Code.exe` 路�
 - [扩展模块安装](https://opendatalab.github.io/MinerU/zh/quick_start/extension_modules/)
 - [GPU 与推理引擎参数](https://opendatalab.github.io/MinerU/zh/usage/advanced_cli_parameters/)
 - [MinerU FAQ](https://opendatalab.github.io/MinerU/zh/faq/)
+
+## 文档索引
+
+| 文档 | 内容 | 读者 |
+| --- | --- | --- |
+| [README.md](README.md)（本文） | 安装、MinerU 部署与配置、编辑器使用、开发与验证 | 使用者与开发者 |
+| [CHANGELOG.md](CHANGELOG.md) | 按版本的用户可见变更 | 使用者 |
+| [log.md](log.md) | 历史 bug 的根因分析、五阶段重构、测试方法与已知限制 | 开发者 |
+| [logs/README.md](logs/README.md) | 日志目录的导读与指向 | 开发者 |
+| [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | 第三方组件与许可证声明 | 合规 |
+| [LICENSE](LICENSE) | 本项目许可证 | 合规 |
+
+表格编辑的完整设计说明（控件语义、命中区域推导、几何测量约束）见 [log.md](log.md) 的「Markdown 表格原地编辑」一章。
 
 ## License
 

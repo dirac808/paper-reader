@@ -22,7 +22,7 @@
 - Restore forward and reverse drag selection while keeping single-click placement stable.
 - Update visible block indexes incrementally and cache KaTeX source glyph hit maps to reduce repeated work.
 - Add strict cursor regression tests and long-document performance guards.
-- Document the root causes and five-stage refactor in `logs/README.md`.
+- Document the root causes and five-stage refactor in `log.md`.
 
 ## 1.2.2 (2022/12/23)
 

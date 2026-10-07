@@ -433,6 +433,11 @@ async function main() {
   await testTranslationCancellation();
   testNormalizeMarkdownMathDelimiters();
   require("./tableModel.test.js");
+  const { verifyDocs } = require("./checkDocs.js");
+  const docs = verifyDocs();
+  console.log(
+    `Documentation checks passed (${docs.links} links, ${docs.anchors} anchors, ${docs.scripts} scripts, version ${docs.version}).`
+  );
   console.log("Unit tests passed.");
 }
 

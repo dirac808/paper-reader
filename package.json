@@ -518,6 +518,7 @@
     "pretest": "npm run compile",
     "test": "node ./out/src/test/runTest.js",
     "test:unit": "npm run compile && node scripts/runUnitTests.js",
+    "test:docs": "node scripts/checkDocs.js",
     "test:performance": "npm run compile && node scripts/checkPerformanceGuards.js",
     "test:markdown-performance": "npm run build:markdown && node scripts/checkMarkdownPerformance.js",
     "test:markdown-selection": "npm run build:markdown && node scripts/checkMarkdownHeadingSelection.js",
