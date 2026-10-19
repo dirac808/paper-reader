@@ -791,7 +791,9 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-table {
     position: relative;
     box-sizing: border-box;
-    width: min(100%, 1196px);
+    /* Fill the editor's content width: a table is the one block where a reader expects the width
+       to be used, and capping it left a wide margin on wide panels. */
+    width: 100%;
     margin: 4px auto 12px;
     padding: 31px 22px 0 calc(22px + var(--paper-reader-table-gutter, 0px));
     overflow: visible;
@@ -801,6 +803,10 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
 .paper-reader-cm-table table {
     width: 100%;
     min-width: 0;
+    /* Fixed layout gives every column an equal share of the table and makes long text wrap inside
+       it. With the default auto layout a single long cell claims most of the width, the remaining
+       columns collapse, and the table stops looking like a table. */
+    table-layout: fixed;
     margin: 0;
     border-collapse: collapse;
     color: var(--vscode-editor-foreground);

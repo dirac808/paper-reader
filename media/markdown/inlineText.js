@@ -3,14 +3,14 @@
 // A cell is a single line of Markdown text: no block syntax, no line breaks. Only inline marks are
 // relevant, and only these four kinds: emphasis, strong emphasis, inline code and inline math.
 //
-// Parsing is deliberately shallow. A strong run's inner text is taken literally rather than parsed
-// again, because the renderer maps every character back to a source offset and nesting would make
-// that mapping ambiguous for little gain in a table cell.
+// Tokens carry absolute source offsets. Emphasis and strong emphasis keep their inner tokens, so
+// `**\(n\)**` renders as bold math instead of literal backslashes, and every leaf still maps back
+// to the characters it came from — the caret depends on that when a cell switches to its source.
 //
 // `\\(...\\)` is accepted alongside `$...$` for math, because MinerU emits that form and rewriting
 // the document just to display a formula would be surprising.
 
-const MARK_DELIMITERS = ['*', '_', '`', '$'];
+const MAX_NESTING = 6;
 
 const isEscaped = (source, index) => {
   let slashes = 0;
@@ -24,19 +24,19 @@ const isWordChar = (char) => !!char && /[0-9A-Za-z\u4e00-\u9fff]/.test(char);
 
 // A run of the same delimiter character, used for code spans where the opening and closing runs
 // must be the same length.
-const runLengthAt = (source, index) => {
+const runLengthAt = (source, index, limit) => {
   let length = 0;
-  while (source[index + length] === source[index]) length += 1;
+  while (index + length < limit && source[index + length] === source[index]) length += 1;
   return length;
 };
 
-const findRunEnd = (source, from, marker, length) => {
+const findRunEnd = (source, from, limit, marker, length) => {
   let cursor = from;
-  while (cursor < source.length) {
+  while (cursor < limit) {
     if (source.startsWith(marker, cursor) && !isEscaped(source, cursor)) {
       // A longer run of the same character is not a closer for this run.
       if (marker[0] === '`' && source[cursor + length] === '`') {
-        cursor += runLengthAt(source, cursor);
+        cursor += runLengthAt(source, cursor, limit);
         continue;
       }
       return cursor;
@@ -46,11 +46,11 @@ const findRunEnd = (source, from, marker, length) => {
   return -1;
 };
 
-const findUnescaped = (source, marker, from) => {
+const findUnescaped = (source, marker, from, limit) => {
   let cursor = from;
-  while (cursor < source.length) {
+  while (cursor < limit) {
     const found = source.indexOf(marker, cursor);
-    if (found === -1) return -1;
+    if (found === -1 || found >= limit) return -1;
     if (!isEscaped(source, found)) return found;
     cursor = found + marker.length;
   }
@@ -59,38 +59,49 @@ const findUnescaped = (source, marker, from) => {
 
 const hasLineBreak = (value) => value.includes('\n') || value.includes('\r');
 
-export const parseInlineMarks = (value) => {
-  const source = String(value ?? '');
+const parseRange = (source, from, to, depth) => {
   const tokens = [];
-  let plainFrom = 0;
-  let cursor = 0;
+  let plainFrom = from;
+  let cursor = from;
 
   const pushPlain = (until) => {
     if (until > plainFrom) {
       tokens.push({ kind: 'text', from: plainFrom, to: until, text: source.slice(plainFrom, until) });
     }
   };
-  const pushMarked = (kind, from, to, innerFrom, innerTo) => {
-    tokens.push({
+  const pushMarked = (kind, start, end, innerFrom, innerTo) => {
+    const token = {
       kind,
-      from,
-      to,
+      from: start,
+      to: end,
       innerFrom,
       innerTo,
       text: source.slice(innerFrom, innerTo),
-    });
+    };
+    // Emphasis and strong keep their inner tokens so math or code inside them still render. The
+    // depth guard stops pathological input from recursing without bound.
+    if (depth < MAX_NESTING) token.children = parseRange(source, innerFrom, innerTo, depth + 1);
+    tokens.push(token);
   };
+  const canNest = depth < MAX_NESTING;
 
-  while (cursor < source.length) {
+  while (cursor < to) {
     const char = source[cursor];
 
     // Inline code first: everything inside a backtick run is literal.
     if (char === '`' && !isEscaped(source, cursor)) {
-      const length = runLengthAt(source, cursor);
-      const close = findRunEnd(source, cursor + length, '`', length);
+      const length = runLengthAt(source, cursor, to);
+      const close = findRunEnd(source, cursor + length, to, '`', length);
       if (close !== -1) {
         pushPlain(cursor);
-        pushMarked('code', cursor, close + length, cursor + length, close);
+        tokens.push({
+          kind: 'code',
+          from: cursor,
+          to: close + length,
+          innerFrom: cursor + length,
+          innerTo: close,
+          text: source.slice(cursor + length, close),
+        });
         cursor = close + length;
         plainFrom = cursor;
         continue;
@@ -99,11 +110,17 @@ export const parseInlineMarks = (value) => {
 
     // \\( ... \\)
     if (char === '\\' && source[cursor + 1] === '(' && !isEscaped(source, cursor)) {
-      const close = findUnescaped(source, '\\)', cursor + 2);
+      const close = findUnescaped(source, '\\)', cursor + 2, to);
       const content = close === -1 ? '' : source.slice(cursor + 2, close);
       if (close !== -1 && content.trim() && !hasLineBreak(content)) {
         pushPlain(cursor);
-        tokens.push({ kind: 'math', from: cursor, to: close + 2, content: content.trim(), delimiter: '\\(' });
+        tokens.push({
+          kind: 'math',
+          from: cursor,
+          to: close + 2,
+          content: content.trim(),
+          delimiter: '\\(',
+        });
         cursor = close + 2;
         plainFrom = cursor;
         continue;
@@ -112,11 +129,17 @@ export const parseInlineMarks = (value) => {
 
     // $ ... $ (never $$, which is display math and cannot appear inside a cell)
     if (char === '$' && !isEscaped(source, cursor) && source[cursor + 1] !== '$') {
-      const close = findUnescaped(source, '$', cursor + 1);
+      const close = findUnescaped(source, '$', cursor + 1, to);
       const content = close === -1 ? '' : source.slice(cursor + 1, close);
       if (close !== -1 && source[close + 1] !== '$' && content.trim() && !hasLineBreak(content)) {
         pushPlain(cursor);
-        tokens.push({ kind: 'math', from: cursor, to: close + 1, content: content.trim(), delimiter: '$' });
+        tokens.push({
+          kind: 'math',
+          from: cursor,
+          to: close + 1,
+          content: content.trim(),
+          delimiter: '$',
+        });
         cursor = close + 1;
         plainFrom = cursor;
         continue;
@@ -129,7 +152,9 @@ export const parseInlineMarks = (value) => {
       const wordBoundary = char !== '_' || !isWordChar(source[cursor - 1]);
       const opensOnText = !/\s/.test(source[cursor + 2] || '');
       const marker = char + char;
-      const close = wordBoundary && opensOnText ? findRunEnd(source, cursor + 2, marker, 2) : -1;
+      const close = wordBoundary && opensOnText
+        ? findRunEnd(source, cursor + 2, to, marker, 2)
+        : -1;
       const inner = close === -1 ? '' : source.slice(cursor + 2, close);
       if (close !== -1 && inner && !/\s$/.test(inner) && !hasLineBreak(inner)) {
         pushPlain(cursor);
@@ -145,7 +170,7 @@ export const parseInlineMarks = (value) => {
       source[cursor + 1] !== char && !/\s/.test(source[cursor + 1] || '')) {
       const wordBoundary = char !== '_' ||
         (!isWordChar(source[cursor - 1]) && !isWordChar(source[cursor + 1]));
-      const close = wordBoundary ? findRunEnd(source, cursor + 1, char, 1) : -1;
+      const close = wordBoundary ? findRunEnd(source, cursor + 1, to, char, 1) : -1;
       const inner = close === -1 ? '' : source.slice(cursor + 1, close);
       const closesOnWord = close !== -1 && !isWordChar(source[close + 1]);
       if (close !== -1 && closesOnWord && inner && !/\s$/.test(inner) && !hasLineBreak(inner)) {
@@ -160,13 +185,17 @@ export const parseInlineMarks = (value) => {
     cursor += 1;
   }
 
-  pushPlain(source.length);
+  pushPlain(to);
   return tokens;
+};
+
+export const parseInlineMarks = (value) => {
+  const source = String(value ?? '');
+  return parseRange(source, 0, source.length, 0);
 };
 
 // True when the cell needs the rendered view: at least one token carries a mark.
 export const hasInlineMarks = (value) =>
   parseInlineMarks(value).some((token) => token.kind !== 'text');
 
-export const INLINE_MARK_DELIMITERS = MARK_DELIMITERS;
-
+export const INLINE_MARK_DELIMITERS = ['*', '_', '`', '$'];

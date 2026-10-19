@@ -1297,9 +1297,19 @@ const CELL_MODE_RENDERED = 'rendered';
 const CELL_MODE_PLAIN = 'plain';
 const CELL_MODE_SOURCE = 'source';
 
-const renderCellMarks = (host, source) => {
-  host.textContent = '';
-  for (const token of parseInlineMarks(source)) {
+// Builds one node per token. Emphasis and strong emphasis recurse into their own tokens, so a
+// formula written inside bold text (`**\(n\)**`) still renders as math; every leaf keeps its own
+// source range, which is what a press is mapped through.
+const renderCellTokens = (parent, tokens) => {
+  for (const token of tokens) {
+    if (token.kind === 'strong' || token.kind === 'em') {
+      const node = document.createElement(token.kind === 'strong' ? 'strong' : 'em');
+      node.dataset.srcFrom = String(token.innerFrom);
+      node.dataset.srcTo = String(token.innerTo);
+      renderCellTokens(node, token.children || []);
+      parent.appendChild(node);
+      continue;
+    }
     if (token.kind === 'math') {
       const node = document.createElement('span');
       node.className = 'paper-reader-cm-cell-math';
@@ -1318,7 +1328,7 @@ const renderCellMarks = (host, source) => {
       } catch {
         node.textContent = token.content;
       }
-      host.appendChild(node);
+      parent.appendChild(node);
       continue;
     }
     if (token.kind === 'text') {
@@ -1326,17 +1336,20 @@ const renderCellMarks = (host, source) => {
       span.dataset.srcFrom = String(token.from);
       span.dataset.srcTo = String(token.to);
       span.textContent = token.text;
-      host.appendChild(span);
+      parent.appendChild(span);
       continue;
     }
-    const node = document.createElement(
-      token.kind === 'strong' ? 'strong' : token.kind === 'em' ? 'em' : 'code',
-    );
+    const node = document.createElement('code');
     node.dataset.srcFrom = String(token.innerFrom);
     node.dataset.srcTo = String(token.innerTo);
     node.textContent = token.text;
-    host.appendChild(node);
+    parent.appendChild(node);
   }
+};
+
+const renderCellMarks = (host, source) => {
+  host.textContent = '';
+  renderCellTokens(host, parseInlineMarks(source));
 };
 
 const setCellPlain = (host, source) => {

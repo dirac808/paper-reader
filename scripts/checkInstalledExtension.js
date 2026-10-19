@@ -597,7 +597,7 @@ async function main() {
       '| 标记 | 公式 | 代码 |',
       '| --- | --- | --- |',
       '| **x** | \\(\\Xi_\\rho\\) | `a_b` |',
-      '| *i* | $x+y$ | 纯文本 |',
+      '| *i* | $x+y$ | **\\(n\\)** |',
       '',
     ].join('\n'))}},'*')`);
     await delay(500);
@@ -611,14 +611,16 @@ async function main() {
         bold: strong ? strong.textContent : null,
         boldSource: strong ? strong.dataset.source : null,
         katex: cells.filter((cell) => cell.querySelector('.paper-reader-cm-cell-math .katex')).length,
+        boldMath: cells.filter((cell) => cell.querySelector('strong .katex, em .katex')).length,
         code: cells.filter((cell) => cell.querySelector('code')).length,
         em: cells.filter((cell) => cell.querySelector('em')).length,
       };
     })()`);
-    check("inline emphasis, code and both math delimiters render inside cells",
+    check("inline emphasis, code, nested math and both math delimiters render inside cells",
       inlineRender.tables === 1 && inlineRender.proseMath >= 2 && inlineRender.rendered >= 4 &&
       inlineRender.bold === 'x' && inlineRender.boldSource === '**x**' &&
-      inlineRender.katex >= 2 && inlineRender.code >= 1 && inlineRender.em >= 1,
+      inlineRender.katex >= 2 && inlineRender.boldMath >= 1 &&
+      inlineRender.code >= 1 && inlineRender.em >= 1,
       inlineRender);
 
     const strongSpot = await evaluate(client, `(() => {
@@ -695,6 +697,47 @@ async function main() {
     } else {
       check("the empty-cell fixture rendered a cell", false, null);
     }
+
+    // Column widths: equal shares, the table fills the widget's content box, and a long unbroken
+    // token wraps inside its column rather than inflating it and squeezing the others.
+    const longToken = "x".repeat(120);
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      `| ${longToken} | short | short |`,
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const tableWidth = await evaluate(client, `(() => {
+      const table = document.querySelector('.paper-reader-cm-table table');
+      if (!table) return null;
+      const wrapper = table.closest('.paper-reader-cm-table');
+      const style = getComputedStyle(wrapper);
+      const headers = [...table.querySelectorAll('thead th')]
+        .map((th) => Math.round(th.getBoundingClientRect().width));
+      const longCell = [...table.querySelectorAll('.paper-reader-cm-cell')]
+        .find((cell) => String(cell.dataset.source || cell.textContent || '').startsWith('xxxxxxxxxx'));
+      const rect = longCell ? longCell.getBoundingClientRect() : null;
+      return {
+        layout: getComputedStyle(table).tableLayout,
+        tableWidth: Math.round(table.getBoundingClientRect().width),
+        wrapperContent: Math.round(wrapper.clientWidth
+          - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        spread: headers.length ? Math.max(...headers) - Math.min(...headers) : null,
+        long: rect ? {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          scrollWidth: longCell.scrollWidth,
+          lineHeight: parseFloat(getComputedStyle(longCell).lineHeight) || 22,
+        } : null,
+      };
+    })()`);
+    check("table columns share the width evenly, fill it, and wrap long text",
+      !!tableWidth && tableWidth.layout === 'fixed' && tableWidth.spread <= 2 &&
+      tableWidth.tableWidth >= tableWidth.wrapperContent - 1 &&
+      !!tableWidth.long && tableWidth.long.scrollWidth <= tableWidth.long.width + 1 &&
+      tableWidth.long.height > tableWidth.long.lineHeight * 1.5,
+      tableWidth);
 
     // 7. The explicit source escape hatch is present in the toolbar.
     check("table source button is wired",

@@ -2983,7 +2983,7 @@ async function main() {
       '| 标记 | 公式 | 代码 |',
       '| --- | --- | --- |',
       '| **x** | \\(\\Xi_\\rho\\) | `a_b` |',
-      '| *i* | $x+y$ | 纯文本 |',
+      '| *i* | $x+y$ | **\\(n\\)** |',
       '',
     ].join('\n'))}},'*')`);
     await delay(400);
@@ -3001,6 +3001,9 @@ async function main() {
         boldEditable: bold ? bold.getAttribute('contenteditable') : null,
         boldHasSource: bold ? bold.dataset.source : null,
         mathCells: cells.filter((cell) => cell.querySelector('.paper-reader-cm-cell-math .katex')).length,
+        // A formula written inside emphasis has to render too: bold math is a common MinerU shape,
+        // and emphasis used to keep its inner text literal.
+        boldMathCells: cells.filter((cell) => cell.querySelector('strong .katex, em .katex')).length,
         codeCells: cells.filter((cell) => cell.querySelector('code')).length,
         emCells: cells.filter((cell) => cell.querySelector('em')).length,
         plainEditable: plain ? plain.getAttribute('contenteditable') : null,
@@ -3023,6 +3026,8 @@ async function main() {
       `Both math delimiters must render inside cells: ${JSON.stringify(inlineRender)}`);
     assert.ok(inlineRender.codeCells >= 1 && inlineRender.emCells >= 1,
       `Inline code and emphasis must render inside cells: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.boldMathCells >= 1,
+      `A formula inside emphasis must render: ${JSON.stringify(inlineRender)}`);
     assert.strictEqual(inlineRender.plainEditable, 'plaintext-only',
       `A cell without marks must stay a plain editable box: ${JSON.stringify(inlineRender)}`);
     assert.ok(inlineRender.documentText.includes('**x**') &&
@@ -3178,6 +3183,55 @@ async function main() {
     } else {
       assert.fail('The empty-cell fixture did not render a table cell');
     }
+
+    // Table width: every column takes an equal share of the table, the table fills the widget's
+    // content box, and a long unbroken token wraps inside its column instead of inflating that
+    // column and squeezing the others.
+    const longToken = 'x'.repeat(120);
+    const wideTable = [
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      `| ${longToken} | short | short |`,
+      '',
+    ].join('\n');
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(wideTable)}},'*')`);
+    await delay(400);
+    const tableWidth = await evaluate(client, `(() => {
+      const table = document.querySelector('.paper-reader-cm-table table');
+      if (!table) return null;
+      const wrapper = table.closest('.paper-reader-cm-table');
+      const style = getComputedStyle(wrapper);
+      const headers = [...table.querySelectorAll('thead th')]
+        .map((th) => Math.round(th.getBoundingClientRect().width));
+      const longCell = [...table.querySelectorAll('.paper-reader-cm-cell')]
+        .find((cell) => String(cell.dataset.source || cell.textContent || '').startsWith('xxxxxxxxxx'));
+      const rect = longCell ? longCell.getBoundingClientRect() : null;
+      return {
+        layout: getComputedStyle(table).tableLayout,
+        tableWidth: Math.round(table.getBoundingClientRect().width),
+        wrapperContent: Math.round(wrapper.clientWidth
+          - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        headers,
+        spread: headers.length ? Math.max(...headers) - Math.min(...headers) : null,
+        long: rect ? {
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+          scrollWidth: longCell.scrollWidth,
+          lineHeight: parseFloat(getComputedStyle(longCell).lineHeight) || 22,
+        } : null,
+      };
+    })()`);
+    assert.ok(tableWidth, 'The wide-table fixture did not render');
+    assert.strictEqual(tableWidth.layout, 'fixed',
+      `Table columns must share the width evenly: ${JSON.stringify(tableWidth)}`);
+    assert.ok(tableWidth.spread <= 2,
+      `Table columns must be equally wide: ${JSON.stringify(tableWidth)}`);
+    assert.ok(tableWidth.tableWidth >= tableWidth.wrapperContent - 1,
+      `The table must fill the content width: ${JSON.stringify(tableWidth)}`);
+    assert.ok(tableWidth.long && tableWidth.long.scrollWidth <= tableWidth.long.width + 1,
+      `Long cell text must wrap instead of overflowing: ${JSON.stringify(tableWidth)}`);
+    assert.ok(tableWidth.long && tableWidth.long.height > tableWidth.long.lineHeight * 1.5,
+      `Long cell text must wrap onto more than one line: ${JSON.stringify(tableWidth)}`);
 
     await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(
       'Intro paragraph.\n\n'

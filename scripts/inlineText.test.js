@@ -110,4 +110,49 @@ assert.strictEqual(mixed[0].text, "适合");
 assert.strictEqual(mixed[2].text, "：");
 assert.strictEqual(mixed[5].content, "\\Xi_\\rho");
 
+// 11. Emphasis keeps its inner marks, so `**\(n\)**` renders as bold math rather than literal
+//     backslashes. Children carry absolute offsets, which is what the caret mapping uses.
+const nestedMath = parseInlineMarks("**\\(n\\)**");
+assert.deepStrictEqual(nestedMath.map((token) => token.kind), ["strong"]);
+assert.strictEqual(nestedMath[0].text, "\\(n\\)");
+assert.deepStrictEqual(nestedMath[0].children.map((token) => token.kind), ["math"]);
+assert.strictEqual(nestedMath[0].children[0].content, "n");
+assert.strictEqual(nestedMath[0].children[0].from, 2);
+assert.strictEqual(nestedMath[0].children[0].to, 2 + "\\(n\\)".length);
+
+const nestedCode = parseInlineMarks("**a `b` c**");
+assert.strictEqual(nestedCode[0].kind, "strong");
+assert.deepStrictEqual(nestedCode[0].children.map((token) => token.kind), ["text", "code", "text"]);
+assert.strictEqual(nestedCode[0].children[1].text, "b");
+assert.strictEqual(nestedCode[0].children[1].innerFrom, 5);
+
+const nestedEm = parseInlineMarks("**a *b* c**");
+assert.deepStrictEqual(nestedEm[0].children.map((token) => token.kind), ["text", "em", "text"]);
+assert.strictEqual(nestedEm[0].children[1].text, "b");
+
+const plainStrong = parseInlineMarks("**bold**");
+assert.deepStrictEqual(plainStrong[0].children.map((token) => token.kind), ["text"]);
+
+// Every child range must sit inside its parent and stay contiguous.
+const assertChildrenCover = (value) => {
+  for (const token of parseInlineMarks(value)) {
+    if (!token.children) continue;
+    let cursor = token.innerFrom;
+    for (const child of token.children) {
+      assert.strictEqual(child.from, cursor, `child gap in ${JSON.stringify(value)}`);
+      assert.ok(child.to > child.from, `empty child in ${JSON.stringify(value)}`);
+      assert.ok(child.to <= token.innerTo, `child escapes parent in ${JSON.stringify(value)}`);
+      cursor = child.to;
+    }
+    assert.strictEqual(cursor, token.innerTo, `children do not cover ${JSON.stringify(value)}`);
+  }
+};
+for (const value of ["**\\(n\\)**", "**a `b` c**", "**a *b* c**", "**bold**", "*\\(x\\)*", "**a \\(n\\) b $m$ c**"]) {
+  assertChildrenCover(value);
+}
+
+// 12. Nesting is bounded: deeply repeated delimiters must not recurse forever.
+const deeplyNested = `${"*".repeat(40)}x${"*".repeat(40)}`;
+assert.ok(Array.isArray(parseInlineMarks(deeplyNested)));
+
 console.log("Inline text unit tests passed.");

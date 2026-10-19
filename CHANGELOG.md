@@ -3,7 +3,8 @@
 ## 1.6.1 (2026/10/19)
 
 - Render inline marks inside table cells: `**bold**`, `*italic*` and `` `code` `` show as formatting at rest, and the cell switches to its Markdown source while it is being edited, so the caret still moves over plain text.
-- Render inline math inside table cells, in both `$...$` and `\(\Xi_\rho\)` form.
+- Render inline math inside table cells, in both `$...$` and `\(\Xi_\rho\)` form, including formulas inside emphasis such as `**\(\Xi_\rho\)**`.
+- Give every table column an equal share of the width, fill the editor's content width, and wrap long cell text inside its own column instead of letting one long cell squeeze the others.
 - Accept `\(\Xi_\rho\)` for inline math in prose too. MinerU writes formulas that way; the document is no longer required to use `$...$`.
 - Fix a table showing stale content after the document was replaced: a host update could change a table's cells without moving its range, and the editor then kept the previously mounted cells.
 - Fix a first keystroke typed into a cell that holds only whitespace never reaching the document: the cell's editable range could end before it started, so the commit failed and the text disappeared on the next render.
