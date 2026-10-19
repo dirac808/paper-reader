@@ -583,3 +583,20 @@ Markdown 表格不携带列宽。可选载体有三种：编辑器本地状态�
 
 - 分隔行会变长（上面例子里第一列 22 划）。这是「宽度存在 Markdown 里」的直接代价；换来的是不依赖编辑器状态、跨机器一致。
 - 手柄只在表头：正文边缘留给文字选择，代价是不能在表格中部拖拽。
+
+## 2026-10-19：1.6.1 发布与部署
+
+用户确认发布。本次 1.6.1 包含：单元格行内标记与两种公式、强调内公式、等宽列宽与换行、空单元格首次输入修复、外部更新后表格内容陈旧修复、列宽拖拽（宽度写入分隔线）。
+
+### GitHub Release
+
+- tag `v1.6.1`（指向 `b08a201`），已推送。
+- Release：https://github.com/dirac808/paper-reader/releases/tag/v1.6.1
+- 资产 `paper-reader-1.6.1.vsix`，6,006,576 字节，SHA256 `6d17684f15f9907101109614492475a73a0f64a697e1e813503618db185b1335`（与本地一致）。
+
+### dell 部署
+
+- 通过 scp 传输 VSIX（传输后 sha256sum 与本地一致），`code --install-extension --force` 安装。
+- 删除遗留的 `paper-reader-lab.paper-reader-1.6.0` 目录，避免再次出现「验证器/VS Code 读到旧版本」的问题（本地曾因残留 1.5.6 目录把已安装检查跑在旧包上）。
+- 复核：`code --list-extensions --show-versions` → `paper-reader-lab.paper-reader@1.6.1`；安装目录 `package.json` 版本 1.6.1；`media/markdown/codemirror.bundle.js` SHA256 `bfc3c5d7dfef5b457adef896b73610636db2c43e0b61d7d7db716c94172c6828`，与本地构建产物完全一致。
+- 清理 `/tmp/paper-reader-1.6.1.vsix`。
