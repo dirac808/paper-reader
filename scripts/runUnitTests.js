@@ -433,6 +433,7 @@ async function main() {
   await testTranslationCancellation();
   testNormalizeMarkdownMathDelimiters();
   require("./tableModel.test.js");
+  require("./inlineText.test.js");
   const { verifyDocs } = require("./checkDocs.js");
   const docs = verifyDocs();
   console.log(

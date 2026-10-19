@@ -38,6 +38,7 @@ import {
   tableEstimatedHeight,
   unescapeTableCell,
 } from './tableModel.js';
+import { hasInlineMarks, parseInlineMarks } from './inlineText.js';
 
 const handler = window.handler;
 let cursorDiagnosticActive = false;
@@ -368,6 +369,9 @@ const selectionAnchor = (view) => {
 const mathPattern = /(?:^|\n)[ \t]*(\$\$|\\\[)[ \t]*\n?([\s\S]*?)(?:\n[ \t]*)?(\$\$|\\\])(?=\n|$)/g;
 const imagePattern = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g;
 const inlineMathPattern = /(^|[^\\$])\$(?!\$)([^\n$]+?)(?<!\\)\$(?!\$)/g;
+// MinerU writes inline math as `\(\Xi_\rho\)`. Accepting that form keeps the document unchanged
+// instead of rewriting every formula to `$...$` just to display it.
+const parenthesizedMathPattern = /(^|[^\\])(\\\([^\n]*?\\\))/g;
 const superscriptPattern = /<(sup|sub)>([^<\n]*)<\/(sup|sub)>/gi;
 const imageSizeCache = new Map();
 let imageBasePath = '';
@@ -1017,10 +1021,13 @@ class TableWidget extends WidgetType {
   }
 
   eq(other) {
-    // Reusing the live DOM is what keeps the caret and focus alive across transactions.
-    // Two widgets for the same live table session are always considered equal so the
-    // editor moves the existing element instead of rebuilding it.
-    if (other.session && other.session === this.session && other.session.live) return true;
+    // Reusing the live DOM is what keeps the caret and focus alive across transactions. Two
+    // widgets for the same live table session are considered equal only while the mounted table
+    // still matches the new model: a host document update can replace a table's content without
+    // moving its range, and returning equal there would leave the previous cells on screen.
+    if (other.session && other.session === this.session && other.session.live) {
+      return tableDomMatchesSessionModel(other.session, other.table);
+    }
     return other.from === this.from && other.to === this.to &&
       other.table.from === this.table.from && other.table.to === this.table.to &&
       JSON.stringify(other.table.rows) === JSON.stringify(this.table.rows) &&
@@ -1208,11 +1215,13 @@ const observeTableGeometry = (node, session) => {
 const buildCellContent = (text, rowIndex, columnIndex) => {
   const host = document.createElement('div');
   host.className = 'paper-reader-cm-cell';
-  host.setAttribute('contenteditable', 'plaintext-only');
   host.spellcheck = false;
   host.dataset.rowIndex = String(rowIndex);
   host.dataset.columnIndex = String(columnIndex);
-  host.textContent = text;
+  // Only a cell that actually carries a mark needs the rendered view; everything else stays a
+  // plain editable box, exactly as before.
+  if (hasInlineMarks(text)) setCellRendered(host, text);
+  else setCellPlain(host, text);
   return host;
 };
 
@@ -1263,21 +1272,168 @@ const setCaretInCell = (host, offset) => {
   selection.addRange(range);
 };
 
+// The caret range under a pointer position, or null when the platform cannot resolve one.
+const caretRangeAt = (event) => {
+  if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return null;
+  if (typeof document.caretRangeFromPoint === 'function') {
+    return document.caretRangeFromPoint(event.clientX, event.clientY);
+  }
+  if (typeof document.caretPositionFromPoint === 'function') {
+    const position = document.caretPositionFromPoint(event.clientX, event.clientY);
+    if (!position) return null;
+    const range = document.createRange();
+    range.setStart(position.offsetNode, position.offset);
+    range.collapse(true);
+    return range;
+  }
+  return null;
+};
+
+// A cell shows its rendered inline marks at rest and its Markdown source while it is being edited.
+// The rendered view is what makes `**bold**` and `\(\Xi_\rho\)` read as Markdown, while the source
+// view keeps the caret, selection and commit paths on plain text — the model the table editor is
+// built on. Switching happens on press and on blur, so neither view has to compromise.
+const CELL_MODE_RENDERED = 'rendered';
+const CELL_MODE_PLAIN = 'plain';
+const CELL_MODE_SOURCE = 'source';
+
+const renderCellMarks = (host, source) => {
+  host.textContent = '';
+  for (const token of parseInlineMarks(source)) {
+    if (token.kind === 'math') {
+      const node = document.createElement('span');
+      node.className = 'paper-reader-cm-cell-math';
+      // Atomic for the caret: a press anywhere on the formula maps to one of its two ends, not
+      // into the middle of the rendered markup.
+      node.dataset.srcFrom = String(token.from);
+      node.dataset.srcTo = String(token.to);
+      node.dataset.srcAtomic = 'true';
+      node.setAttribute('contenteditable', 'false');
+      try {
+        node.innerHTML = katex.renderToString(token.content, {
+          displayMode: false,
+          throwOnError: false,
+          strict: 'ignore',
+        });
+      } catch {
+        node.textContent = token.content;
+      }
+      host.appendChild(node);
+      continue;
+    }
+    if (token.kind === 'text') {
+      const span = document.createElement('span');
+      span.dataset.srcFrom = String(token.from);
+      span.dataset.srcTo = String(token.to);
+      span.textContent = token.text;
+      host.appendChild(span);
+      continue;
+    }
+    const node = document.createElement(
+      token.kind === 'strong' ? 'strong' : token.kind === 'em' ? 'em' : 'code',
+    );
+    node.dataset.srcFrom = String(token.innerFrom);
+    node.dataset.srcTo = String(token.innerTo);
+    node.textContent = token.text;
+    host.appendChild(node);
+  }
+};
+
+const setCellPlain = (host, source) => {
+  host.dataset.cellMode = CELL_MODE_PLAIN;
+  host.dataset.source = source;
+  host.setAttribute('contenteditable', 'plaintext-only');
+  host.textContent = source;
+};
+
+const setCellRendered = (host, source) => {
+  host.dataset.cellMode = CELL_MODE_RENDERED;
+  host.dataset.source = source;
+  host.setAttribute('contenteditable', 'false');
+  renderCellMarks(host, source);
+};
+
+// Switches a rendered cell to its source text. Returns whether a switch happened, in which case the
+// caller still has to place the caret.
+const enterCellSourceMode = (host) => {
+  if (host.dataset.cellMode !== CELL_MODE_RENDERED) return false;
+  const source = host.dataset.source ?? host.textContent ?? '';
+  host.dataset.cellMode = CELL_MODE_SOURCE;
+  host.dataset.source = source;
+  host.setAttribute('contenteditable', 'plaintext-only');
+  host.textContent = source;
+  return true;
+};
+
+// What a commit should read: a rendered cell holds no editable text, so its source lives in the
+// dataset instead of in the DOM.
+const cellEditableText = (host) => (
+  host.dataset.cellMode === CELL_MODE_RENDERED
+    ? (host.dataset.source ?? '')
+    : String(host.textContent ?? '')
+);
+
+// The Markdown a cell stands for. A rendered cell's textContent is its display text, so comparing
+// that against the model would report a mismatch on every pass and rebuild the table needlessly.
+const cellModelText = (host) => {
+  if (host.dataset.cellMode === CELL_MODE_RENDERED) return String(host.dataset.source ?? '');
+  return String(host.textContent ?? '');
+};
+
+const writeCellSource = (host, text) => {
+  if (host.dataset.cellMode === CELL_MODE_RENDERED) {
+    host.dataset.source = text;
+    renderCellMarks(host, text);
+    return;
+  }
+  host.textContent = text;
+};
+
+// Editing is over: a cell that carries marks goes back to its rendered view, a plain cell stays a
+// plain editable box so the common case keeps the behaviour it always had.
+const settleCellAfterEdit = (host) => {
+  if (!host || !host.isConnected) return;
+  const source = String(host.textContent ?? '');
+  host.dataset.source = source;
+  if (hasInlineMarks(source)) setCellRendered(host, source);
+  else setCellPlain(host, source);
+};
+
+// Maps a press inside the rendered view back to an offset in the Markdown source, so switching to
+// the source view can put the caret on the character that was actually clicked.
+const sourceOffsetInRenderedCell = (host, event) => {
+  const range = caretRangeAt(event);
+  const source = host.dataset.source ?? '';
+  if (!range || !host.contains(range.startContainer)) return null;
+  let element = range.startContainer.nodeType === 1
+    ? range.startContainer
+    : range.startContainer.parentElement;
+  while (element && element !== host) {
+    if (element.dataset && element.dataset.srcFrom !== undefined) {
+      const from = Number(element.dataset.srcFrom);
+      const to = Number(element.dataset.srcTo);
+      if (element.dataset.srcAtomic === 'true') {
+        const rect = element.getBoundingClientRect();
+        return event.clientX < rect.left + rect.width / 2 ? from : to;
+      }
+      const inner = offsetWithinCell(element, range.startContainer, range.startOffset);
+      return from + (inner ?? 0);
+    }
+    element = element.parentElement;
+  }
+  if (range.startContainer === host) {
+    const probe = document.createRange();
+    probe.selectNodeContents(host);
+    probe.setEnd(range.startContainer, range.startOffset);
+    return probe.toString().length <= 0 ? 0 : source.length;
+  }
+  return 0;
+};
+
 // Character offset inside a cell for a pointer position. Needed because CodeMirror cancels
 // the default widget mousedown, so the browser never places the caret by itself.
 const caretOffsetFromPoint = (host, event) => {
-  if (!Number.isFinite(event?.clientX) || !Number.isFinite(event?.clientY)) return null;
-  let range = null;
-  if (typeof document.caretRangeFromPoint === 'function') {
-    range = document.caretRangeFromPoint(event.clientX, event.clientY);
-  } else if (typeof document.caretPositionFromPoint === 'function') {
-    const position = document.caretPositionFromPoint(event.clientX, event.clientY);
-    if (position) {
-      range = document.createRange();
-      range.setStart(position.offsetNode, position.offset);
-      range.collapse(true);
-    }
-  }
+  const range = caretRangeAt(event);
   if (!range || !host.contains(range.startContainer)) return null;
   const offset = offsetWithinCell(host, range.startContainer, range.startOffset);
   if (offset !== null) return offset;
@@ -1323,11 +1479,11 @@ const commitTableCell = (session, host, options = {}) => {
   if (!block) return false;
   const source = cellSourceRange(block, rowIndex, columnIndex);
   if (!source) return false;
-  const domText = String(host.textContent ?? '').replace(/[\r\n\t]+/g, ' ').trim();
+  const domText = cellEditableText(host).replace(/[\r\n\t]+/g, ' ').trim();
   const sourceText = source.text;
   const caret = caretOffsetInCell(host);
   if (domText === sourceText) {
-    if (options.force && host.textContent !== sourceText) host.textContent = sourceText;
+    if (options.force && cellEditableText(host) !== sourceText) writeCellSource(host, sourceText);
     return false;
   }
   let prefix = 0;
@@ -1357,7 +1513,10 @@ const commitTableCell = (session, host, options = {}) => {
     performanceStats.lastTableCommitMs,
   );
   const delta = insert.length - removed;
-  if (Number.isFinite(caret)) setCaretInCell(host, caret + delta);
+  // A rendered cell has no editable caret to restore; placing one there would fight the view.
+  if (Number.isFinite(caret) && host.dataset.cellMode !== CELL_MODE_RENDERED) {
+    setCaretInCell(host, caret + delta);
+  }
   session.dirty = false;
   session.pending = null;
   return true;
@@ -1369,7 +1528,9 @@ const flushTableSession = (session, options = {}) => {
   session.pending = null;
   if (!host || !host.isConnected) return false;
   const committed = commitTableCell(session, host, options);
-  if (Number.isFinite(caret)) setCaretInCell(host, caret);
+  if (Number.isFinite(caret) && host.dataset.cellMode !== CELL_MODE_RENDERED) {
+    setCaretInCell(host, caret);
+  }
   return committed;
 };
 
@@ -1452,14 +1613,25 @@ const attachTableHandlers = (table, session) => {
     if (!session) return;
     session.focused = false;
     const host = findCellHost(event.target);
-    if (host && !table.contains(event.relatedTarget)) flushTableSession(session);
+    if (!host) return;
+    // Leaving the table commits immediately; moving between cells defers to the typing timer. In
+    // both cases the cell returns to its rendered view, or back to a plain editable box.
+    if (!table.contains(event.relatedTarget)) flushTableSession(session);
+    settleCellAfterEdit(host);
   });
   table.addEventListener('mousedown', (event) => {
     // CodeMirror preventDefaults widget mousedowns, which cancels the browser's own caret
     // placement. Resolve the offset from the click point so click and drag behave natively.
     const host = findCellHost(event.target);
     if (!host || event.button !== 0) return;
-    const offset = caretOffsetFromPoint(host, event);
+    // A rendered cell has to become editable before it can hold a caret. The offset is mapped from
+    // the rendered layout first, so the caret lands on the character that was clicked even though
+    // the source text is wider than what was on screen.
+    const rendered = host.dataset.cellMode === CELL_MODE_RENDERED;
+    const offset = rendered
+      ? sourceOffsetInRenderedCell(host, event)
+      : caretOffsetFromPoint(host, event);
+    if (rendered) enterCellSourceMode(host);
     if (host !== document.activeElement) host.focus();
     if (Number.isFinite(offset)) {
       // Focusing a contenteditable resets its selection, and the host editor also focuses
@@ -1522,6 +1694,7 @@ const attachTableHandlers = (table, session) => {
       session.dirty = false;
       const block = view.state.field(documentBlockPreview).blocks
         .find((entry) => entry.type === 'table' && entry.from === session.from);
+      enterCellSourceMode(host);
       host.textContent = cellSourceRange(
         block || {},
         Number(host.dataset.rowIndex),
@@ -1557,6 +1730,7 @@ const moveTableCellFocus = (session, rowIndex, columnIndex, addRow, wrap = false
     if (replaceTableInDocument(session, model)) {
       const host = cellHostAt(session.element, row, Math.min(column, columns - 1));
       if (host) {
+        enterCellSourceMode(host);
         host.focus();
         setCaretInCell(host, (host.textContent || '').length);
       }
@@ -1569,6 +1743,7 @@ const moveTableCellFocus = (session, rowIndex, columnIndex, addRow, wrap = false
     Math.max(0, Math.min(column, columns - 1)),
   );
   if (!host) return;
+  enterCellSourceMode(host);
   host.focus();
   setCaretInCell(host, 0);
 };
@@ -1583,6 +1758,7 @@ const registerTableElement = (session, node) => {
 // explicitly, and re-focused once after the gesture so the editor cannot reclaim focus.
 const focusTableCell = (host) => {
   if (!host || !host.isConnected) return;
+  enterCellSourceMode(host);
   host.focus();
   requestAnimationFrame(() => {
     if (host.isConnected && document.activeElement !== host) host.focus();
@@ -1597,6 +1773,7 @@ const restoreTableFocus = (session) => {
   if (!host) return;
   requestAnimationFrame(() => {
     if (!host.isConnected) return;
+    enterCellSourceMode(host);
     host.focus();
     setCaretInCell(host, Number.isFinite(caret) ? caret : (host.textContent || '').length);
   });
@@ -1626,7 +1803,7 @@ const tableDomMatchesSessionModel = (session, model) => {
     const hosts = rows[rowIndex].querySelectorAll('.paper-reader-cm-cell');
     if (hosts.length !== pads[rowIndex].length) return false;
     for (let columnIndex = 0; columnIndex < pads[rowIndex].length; columnIndex += 1) {
-      if (String(hosts[columnIndex].textContent) !== String(pads[rowIndex][columnIndex] ?? '')) {
+      if (cellModelText(hosts[columnIndex]) !== String(pads[rowIndex][columnIndex] ?? '')) {
         return false;
       }
     }
@@ -2265,6 +2442,18 @@ const collectDocumentBlocks = (state, tree, options = {}) => {
         blocks.push({ type: 'inlineMath', from, to, source: match[2].trim() });
       }
     }
+    parenthesizedMathPattern.lastIndex = 0;
+    while ((match = parenthesizedMathPattern.exec(text))) {
+      const prefixLength = match[1].length;
+      const raw = match[2];
+      const from = range.from + match.index + prefixLength;
+      const to = from + raw.length;
+      const source = raw.slice(2, -2).trim();
+      if (!source ||
+        rangeContains(protectedRanges, from, to) ||
+        isInsideAnyBlock(blocks, from, to)) continue;
+      blocks.push({ type: 'inlineMath', from, to, source });
+    }
   }
   performanceStats.blockScanMs = performance.now() - started;
   recordSample(performanceStats.blockScanSamples, performanceStats.blockScanMs);
@@ -2512,6 +2701,17 @@ const documentBlockPreview = StateField.define({
     }
     if (value.editingBlock && editingBlock !== value.editingBlock) {
       refreshRanges.push({ from: value.editingBlock.from, to: value.editingBlock.to });
+    }
+    // A host document replacement can change a table's cells without moving its range, and the
+    // incremental refresh below would then keep the previously mounted cells on screen. Compare
+    // against the live table and refresh that block when it no longer matches the new model.
+    if (transaction.docChanged && tableSession?.element) {
+      const liveTable = blocks.find((entry) => entry.type === 'table' &&
+        entry.from <= tableSession.to && entry.to >= tableSession.from) ||
+        blocks.find((entry) => entry.type === 'table');
+      if (liveTable && !tableDomMatchesSessionModel(tableSession, liveTable)) {
+        refreshRanges.push({ from: liveTable.from, to: liveTable.to });
+      }
     }
     if (transaction.docChanged || transaction.selection || hasEditEffect || hasIndexRefresh) {
       return {

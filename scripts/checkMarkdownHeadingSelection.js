@@ -229,6 +229,19 @@ const clickElement = async (client, selector) => {
   });
 };
 
+const clickPoint = async (client, point) => {
+  const x = Math.round(point.x);
+  const y = Math.round(point.y);
+  await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await delay(30);
+  await client.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
+  });
+  await client.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
+  });
+};
+
 const evenlySpaced = (items, count) => {
   if (!items.length || count <= 0) return [];
   if (items.length <= count) return items.slice();
@@ -2961,6 +2974,166 @@ async function main() {
     await evaluate(client, `window.paperReaderMarkdownPerformance.resetEditingBlock()`);
     await delay(120);
 
+    // Inline marks in a table cell. A cell renders emphasis, inline code and inline math at rest,
+    // and switches to its Markdown source on press so the caret still moves over plain text.
+    // `\(...\)` is MinerU's inline math form, so prose has to accept it as well as `$...$`.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      'Prose with \\(\\Xi_\\rho\\) and $a+b$.',
+      '',
+      '| 标记 | 公式 | 代码 |',
+      '| --- | --- | --- |',
+      '| **x** | \\(\\Xi_\\rho\\) | `a_b` |',
+      '| *i* | $x+y$ | 纯文本 |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const inlineRender = await evaluate(client, `(() => {
+      const cells = [...document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell')];
+      const proseMath = [...document.querySelectorAll('.cm-line .paper-reader-cm-inline-math')];
+      const bold = cells.find((cell) => cell.querySelector('strong'));
+      const plain = cells.find((cell) => cell.dataset.cellMode === 'plain');
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        proseMath: proseMath.length,
+        proseMathText: proseMath.map((node) => node.textContent),
+        renderedCells: cells.filter((cell) => cell.dataset.cellMode === 'rendered').length,
+        boldText: bold ? bold.textContent : null,
+        boldEditable: bold ? bold.getAttribute('contenteditable') : null,
+        boldHasSource: bold ? bold.dataset.source : null,
+        mathCells: cells.filter((cell) => cell.querySelector('.paper-reader-cm-cell-math .katex')).length,
+        codeCells: cells.filter((cell) => cell.querySelector('code')).length,
+        emCells: cells.filter((cell) => cell.querySelector('em')).length,
+        plainEditable: plain ? plain.getAttribute('contenteditable') : null,
+        documentText: window.paperReaderMarkdownPerformance.documentText,
+      };
+    })()`);
+    assert.strictEqual(inlineRender.tables, 1,
+      `Inline marks must not collapse the table: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.proseMath >= 2,
+      `Both \\(...\\) and $...$ must render as inline math in prose: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.renderedCells >= 4,
+      `Cells carrying marks must render: ${JSON.stringify(inlineRender)}`);
+    assert.strictEqual(inlineRender.boldText, 'x',
+      `A **cell** must render as bold text without its markers: ${JSON.stringify(inlineRender)}`);
+    assert.strictEqual(inlineRender.boldEditable, 'false',
+      `A rendered cell must not be editable until it is pressed: ${JSON.stringify(inlineRender)}`);
+    assert.strictEqual(inlineRender.boldHasSource, '**x**',
+      `The rendered cell must keep its Markdown source: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.mathCells >= 2,
+      `Both math delimiters must render inside cells: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.codeCells >= 1 && inlineRender.emCells >= 1,
+      `Inline code and emphasis must render inside cells: ${JSON.stringify(inlineRender)}`);
+    assert.strictEqual(inlineRender.plainEditable, 'plaintext-only',
+      `A cell without marks must stay a plain editable box: ${JSON.stringify(inlineRender)}`);
+    assert.ok(inlineRender.documentText.includes('**x**') &&
+      inlineRender.documentText.includes('\\(\\Xi_\\rho\\)'),
+      `Rendering must not rewrite the document source: ${JSON.stringify(inlineRender.documentText)}`);
+
+    // Pressing a rendered cell switches it to source, with the caret at the pressed character.
+    const boldSpot = await evaluate(client, `(() => {
+      const strong = document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell strong');
+      const cell = strong.closest('.paper-reader-cm-cell');
+      const strongRect = strong.getBoundingClientRect();
+      const rect = cell.getBoundingClientRect();
+      return {
+        x: Math.round(strongRect.right - 1),
+        y: Math.round(rect.top + rect.height / 2),
+        cellText: cell.textContent,
+      };
+    })()`);
+    await clickPoint(client, boldSpot);
+    await delay(200);
+    const boldSource = await evaluate(client, `(() => {
+      const cell = document.activeElement?.closest?.('.paper-reader-cm-cell');
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        mode: cell?.dataset.cellMode ?? null,
+        editable: cell?.getAttribute('contenteditable') ?? null,
+        text: cell?.textContent ?? null,
+        offset: window.getSelection()?.anchorOffset ?? null,
+      };
+    })()`);
+    assert.strictEqual(boldSource.tables, 1,
+      `Pressing a rendered cell must keep the table rendered: ${JSON.stringify(boldSource)}`);
+    assert.strictEqual(boldSource.mode, 'source',
+      `Pressing a rendered cell must switch it to source: ${JSON.stringify(boldSource)}`);
+    assert.strictEqual(boldSource.text, '**x**',
+      `The source view must show the Markdown text: ${JSON.stringify(boldSource)}`);
+    assert.ok(Number.isFinite(boldSource.offset) && boldSource.offset >= 2 && boldSource.offset <= 3,
+      `The caret must land inside the pressed run: ${JSON.stringify(boldSource)}`);
+
+    // Typing then settles into the document without losing the marks, and the cell renders again.
+    await client.send('Input.insertText', { text: 'Z' });
+    await delay(700);
+    const boldEdited = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell strong')
+        ?.closest('.paper-reader-cm-cell') || document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell');
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        commits: window.paperReaderMarkdownPerformance.tableCommits,
+        documentText: window.paperReaderMarkdownPerformance.documentText,
+        cells: [...document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell')]
+          .map((entry) => entry.textContent),
+        boldText: cell?.querySelector('strong')?.textContent ?? null,
+        mode: cell?.dataset.cellMode ?? null,
+      };
+    })()`);
+    assert.strictEqual(boldEdited.tables, 1,
+      `Editing a rendered cell must keep the table rendered: ${JSON.stringify(boldEdited)}`);
+    assert.ok(boldEdited.documentText.includes('**') && boldEdited.documentText.includes('Z'),
+      `An edit inside a rendered run must be committed with its markers: ${JSON.stringify(boldEdited.documentText)}`);
+    assert.ok(boldEdited.cells.some((text) => text.includes('Z') && text.includes('x')),
+      `The edited cell must render again with the typed text: ${JSON.stringify(boldEdited)}`);
+
+    // Pressing a rendered formula maps to its ends, never into the rendered markup.
+    const mathSpot = await evaluate(client, `(() => {
+      const math = document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell-math');
+      const cell = math.closest('.paper-reader-cm-cell');
+      const mathRect = math.getBoundingClientRect();
+      const rect = cell.getBoundingClientRect();
+      return {
+        x: Math.round(mathRect.right - 2),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    })()`);
+    await clickPoint(client, mathSpot);
+    await delay(200);
+    const mathSource = await evaluate(client, `(() => {
+      const cell = document.activeElement?.closest?.('.paper-reader-cm-cell');
+      return {
+        mode: cell?.dataset.cellMode ?? null,
+        text: cell?.textContent ?? null,
+        offset: window.getSelection()?.anchorOffset ?? null,
+        length: cell?.textContent?.length ?? null,
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+      };
+    })()`);
+    assert.strictEqual(mathSource.tables, 1,
+      `Pressing a rendered formula must keep the table rendered: ${JSON.stringify(mathSource)}`);
+    assert.strictEqual(mathSource.text, '\\(\\Xi_\\rho\\)',
+      `The formula's source must be restored on press: ${JSON.stringify(mathSource)}`);
+    assert.strictEqual(mathSource.offset, mathSource.length,
+      `Pressing the right half of a formula must put the caret at its end: ${JSON.stringify(mathSource)}`);
+
+    // Leaving the cell renders it again.
+    await evaluate(client, `document.activeElement?.blur()`);
+    await delay(250);
+    const mathSettled = await evaluate(client, `(() => {
+      const cells = [...document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell')];
+      const mathCell = cells.find((cell) => cell.dataset.source === '\\\\(\\\\Xi_\\\\rho\\\\)');
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        mode: mathCell?.dataset.cellMode ?? null,
+        katex: mathCell ? mathCell.querySelectorAll('.katex').length : 0,
+      };
+    })()`);
+    assert.strictEqual(mathSettled.tables, 1,
+      `Leaving a cell must keep the table rendered: ${JSON.stringify(mathSettled)}`);
+    assert.strictEqual(mathSettled.mode, 'rendered',
+      `Leaving a cell must return it to the rendered view: ${JSON.stringify(mathSettled)}`);
+    assert.ok(mathSettled.katex >= 1,
+      `The formula must be rendered again after editing: ${JSON.stringify(mathSettled)}`);
+
     await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(
       'Intro paragraph.\n\n'
     )}},'*')`);
@@ -3212,18 +3385,26 @@ async function main() {
   } finally {
     client?.close();
     browser.kill();
+    // Connections a killed browser left behind would otherwise keep the event loop — and the whole
+    // suite — alive after every check has already passed.
+    server.closeAllConnections?.();
     server.close();
     await delay(200);
+    // A browser profile on Windows can still be locked by a shutting-down child process. The run
+    // is already over at this point, so a locked temp directory must not turn a passing suite into
+    // a failure.
     await fs.promises.rm(browserProfile, {
       recursive: true,
       force: true,
       maxRetries: 5,
       retryDelay: 100,
-    });
+    }).catch(() => {});
   }
 }
 
-main().catch((error) => {
+main().then(() => {
+  process.exit(process.exitCode ?? 0);
+}).catch((error) => {
   console.error(error);
-  process.exitCode = 1;
+  process.exit(1);
 });

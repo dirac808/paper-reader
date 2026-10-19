@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1 (2026/10/19)
+
+- Render inline marks inside table cells: `**bold**`, `*italic*` and `` `code` `` show as formatting at rest, and the cell switches to its Markdown source while it is being edited, so the caret still moves over plain text.
+- Render inline math inside table cells, in both `$...$` and `\(\Xi_\rho\)` form.
+- Accept `\(\Xi_\rho\)` for inline math in prose too. MinerU writes formulas that way; the document is no longer required to use `$...$`.
+- Fix a table showing stale content after the document was replaced: a host update could change a table's cells without moving its range, and the editor then kept the previously mounted cells.
+- Make the browser test suites exit cleanly on Windows instead of hanging in profile cleanup, and stop a locked temp directory from turning a passing run into a failure.
+
 ## 1.6.0 (2026/10/06)
 
 - Edit Markdown tables in place: click a cell to type, and the table stays rendered instead of collapsing into Markdown source.

@@ -838,6 +838,40 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     background: var(--vscode-editor-inactiveSelectionBackground, rgba(127, 127, 127, 0.1));
 }
 
+/* Rendered inline marks inside a cell. A cell shows these at rest and its Markdown source while it
+   is being edited, so the reader sees formatting while the caret still moves over plain text. */
+.paper-reader-cm-cell strong {
+    font-weight: 700;
+}
+
+.paper-reader-cm-cell em {
+    font-style: italic;
+}
+
+.paper-reader-cm-cell code {
+    padding: 0 4px;
+    border: 1px solid var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.2));
+    border-radius: 3px;
+    color: var(--vscode-textPreformat-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+.paper-reader-cm-cell-math {
+    display: inline-block;
+    vertical-align: baseline;
+    line-height: 1.2;
+}
+
+.paper-reader-cm-cell-math .katex {
+    font-size: var(--paper-reader-inline-math-font-size, 15px);
+}
+
+/* A rendered cell is not editable, but it should still read as text, not as a control. */
+.paper-reader-cm-cell[contenteditable="false"] {
+    cursor: text;
+}
+
 .paper-reader-cm-table th .paper-reader-cm-cell {
     font-weight: 600;
 }

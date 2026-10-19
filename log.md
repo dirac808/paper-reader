@@ -396,3 +396,60 @@ node scripts/checkMarkdownHeadingSelection.js
 - **表格右侧"被截断"**：实测面板宽度 1400/900/750/560px 下，表格右边缘始终在 `.cm-content` 右边缘内 54–150px，无横向溢出；最后一行最后一列的文本完整存在于 DOM。截图是右侧被裁切的视觉效果，表格本身没有超出。
 - **单元格里的反引号**：单元格是 `plaintext-only` 的 contenteditable，`host.textContent = text`，未做任何行内 Markdown 渲染，所以 `` `paper-reader.mineru.apiUrl` `` 按字面显示。这是表格原地编辑模型的直接后果——整套偏移/插入符/提交逻辑都建立在"单元格文本 === 源码文本"之上。要不要做单元格行内渲染需要单独决定与实现，本轮未改。
 
+
+## 2026-10-19：单元格行内标记与 `\(...\)` 行内公式（1.6.1）
+
+用户提出两点：单元格里 `**x**` 是否表示加重；行内公式 `\(\Xi_\rho\)` 是否支持。
+
+### 结论（改动前实测）
+
+| 位置 | `**x**` | `\(...\)` | `$x$` |
+| --- | --- | --- | --- |
+| 正文 | 已加重（`**` 隐藏，内文 700 字重） | **原样显示** | 渲染 |
+| 单元格 | **原样显示** | **原样显示** | **原样显示** |
+
+根因两处：单元格是 `contenteditable="plaintext-only"` 且 `textContent = 源码`，从未渲染行内语法；正文的行内公式正则只认 `$...$`。
+
+### 设计：单元格两种视图
+
+单元格的编辑模型建立在「DOM 文本 === 源码文本」之上（光标偏移、拖选、提交都依赖它）。直接渲染会破坏这一点，所以按状态切换：
+
+- **静止（rendered）**：`contenteditable="false"`，渲染 `strong`/`em`/`code`/KaTeX，源码保存在 `dataset.source`。
+- **编辑（source）**：按下时切回 `plaintext-only` + 源码文本，光标仍落在纯文本上。失焦后若含标记则回到 rendered，否则保持普通可编辑框（`plain`）。
+
+关键点：
+
+1. **按压位置映射回源码偏移。** 渲染时每个 token 写入 `data-src-from`/`data-src-to`，按下时从 `caretRangeFromPoint` 找到最近带映射的祖先，偏移相加；公式是**原子**的（点左半点开头、右半点结尾），不会落进 KaTeX 标记内部。这样切换视图造成的排版变化不会让光标跑偏。
+2. **提交读 `dataset.source`。** `commitTableCell` 改为经 `cellEditableText()` 取文本，rendered 状态下取 `dataset.source`，避免把渲染后的文本（含 KaTeX 的 MathML/HTML 重复）写回文档。
+3. **提交后不要给 rendered 单元格设光标。** `commitTableCell`/`flushTableSession` 在 restored 光标前检查 `cellMode`，否则会往不可编辑的 DOM 里塞选区。
+4. **解析器保持浅层。** `media/markdown/inlineText.js`：`**`/`__`、`*`/`_`、反引号、`$...$`、`\(...\)`；下划线强调要求词边界（`paper_reader_api_url`、`some__name` 保持字面），闭合失败则整段按字面处理。强调整体内文不再二次解析，避免偏移映射歧义。
+5. **正文 `\(...\)`** 在 `buildDocumentBlocks` 里新增一条正则扫描，与既有 `$...$` 扫描并列，靠 `isInsideAnyBlock` 去重；文档源码不改写。
+
+### 顺带修掉的两个实缺陷
+
+**1. 外部更新后表格停在旧内容（真实 bug，非本次引入）。**
+
+host 发 `update` 替换文档时，表格块的范围可能没变，而装饰刷新只覆盖 `changedDocumentRanges` 给出的区间；`TableWidget.eq()` 又因「会话存活」直接返回相等，CodeMirror 于是从不重建，画面一直是旧单元格。诊断证据：`documentText` 已是新内容，`cellTexts` 仍是上一个表格。
+
+修复三处：
+- `eq()` 要求挂载的 DOM 与新模型一致（`tableDomMatchesSessionModel`）；
+- `tableDomMatchesSessionModel` 用 `cellModelText()` 比较——rendered 单元格的 `textContent` 是显示文本，直接比较会误判为不匹配、导致每次事务都重建表格；
+- `documentBlockPreview.update` 在文档变化且挂载表格与新模型不符时，把该表格块加入 `refreshRanges`，保证装饰真的刷新。
+
+**2. 已安装验证器一直在校验 1.5.6。**
+
+`scripts/checkInstalledExtension.js` 里把扩展目录硬编码为 `paper-reader-lab.paper-reader-1.5.6`。安装 1.6.0/1.6.1 后它仍在测 1.5.6，**之前的「已安装 17/17 通过」都是针对 1.5.6**。现改为从 `package.json` 解析版本并定位对应目录，缺失时直接报错并给出安装命令；可用 `PAPER_READER_EXTENSION_ROOT` 覆盖。本机同时存在 1.5.6 与 1.6.1 时它才暴露出来。
+
+**3. 浏览器测试在 Windows 上收尾挂死。** 被杀掉的浏览器残留连接让 HTTP server 保持事件循环，套件打印 `checks passed` 后永不退出；`fs.rm` 的 `EBUSY` 还会把通过的一轮标成失败。现在 `server.closeAllConnections()` + 显式 `process.exit`，并吞掉临时 profile 的清理错误。
+
+### 新增断言
+
+- 单测 `scripts/inlineText.test.js`：各位标记、两种公式、下划线词边界、转义、未闭合、混合顺序、中文、以及「token 必须连续覆盖整段源码」的不变量。
+- 浏览器套件：正文两种公式渲染；标记单元格渲染且 `contenteditable=false`、源码保存在 `dataset.source`；无标记单元格仍是普通可编辑框；按下渲染单元格后 `cellMode=source`、`textContent` 为 `**x**`、光标落在按压处；输入后提交仍保留 `**`、单元格重新渲染；公式右半按下后光标在源码末尾；失焦回到 rendered。
+- 已安装验证器：新增「单元格内强调/代码/两种公式渲染」与「按下渲染单元格进入源码、失焦再渲染」两项，并把版本定位改为动态。
+
+### 验证
+
+`npm run test:unit`（含表格模型、行内解析、文档一致性）、`test:performance`、`test:markdown-performance` 通过；主套件正/反方向、长文档分支通过；已安装 bundle（SHA256 与工作区一致）**19 项**通过。长文档 250,974 字符 `maxUpdateMs` 0.2 / `maxParseMs` 5.1 / `pointerP95` 0.8；`fullSourceScans` 由 22 变为 24，来自表格内容变化时的整块刷新，未影响交互延迟。
+
+范围说明：单元格的强调整体内文不再嵌套解析（`**a *b* c**` 里的 `*b*` 按字面显示）；表格单元格仍不支持换行，这是表格语法的限制。

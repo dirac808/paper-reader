@@ -4,7 +4,7 @@ Paper Reader 是面向科研论文的 VS Code 阅读与编辑插件：阅读 PDF
 
 **MinerU 文档识别是核心功能之一。** Paper Reader 作为它在 VS Code 中的前端，负责选择论文、提供解析选项、启动本地解析或上传远端任务、展示进度、接收 Markdown 与图片、保存结果并衔接翻译和编辑。模型推理由独立部署的 MinerU 完成，VSIX 不包含 Python 环境或 MinerU 模型。
 
-当前稳定版：`1.6.0`。历史 bug、根因、五阶段重构与测试记录集中在 [log.md](log.md)。
+当前稳定版：`1.6.1`。历史 bug、根因、五阶段重构与测试记录集中在 [log.md](log.md)。
 
 ## 目录
 
@@ -26,10 +26,10 @@ Paper Reader 是面向科研论文的 VS Code 阅读与编辑插件：阅读 PDF
 
 ## 安装与开始使用
 
-1. 从 [Release](https://github.com/dirac808/paper-reader/releases/latest) 下载 `paper-reader-1.6.0.vsix`，在 VS Code 扩展面板选择 **Install from VSIX...**，或执行：
+1. 从 [Release](https://github.com/dirac808/paper-reader/releases/latest) 下载 `paper-reader-1.6.1.vsix`，在 VS Code 扩展面板选择 **Install from VSIX...**，或执行：
 
    ```bash
-   code --install-extension paper-reader-1.6.0.vsix --force
+   code --install-extension paper-reader-1.6.1.vsix --force
    ```
 
 2. 更新安装后执行 `Developer: Reload Window`。
@@ -395,7 +395,20 @@ API 密钥也可通过启动 VS Code 时的环境变量提供，读取顺序是 
 - 点击任意单元格，光标落在**你点击的位置**，不是单元格开头。
 - 在单元格内按住拖动可以**选中文字**。
 - 输入后停顿约 350ms，或按 `Enter` / `Tab` / `Esc`，或点击别处，改动才会提交为一次最小化的文档修改。因此连续输入只产生一次编辑事务，光标不会被打断。
-- 单元格内容按纯文本处理：单元格里写的行内 Markdown（如 `` `code` ``）会原样显示，不会被渲染成富文本。
+
+**单元格里的行内标记**
+
+单元格静止时按 Markdown 渲染，点击后切换为源码编辑——这样阅读时看到排版，编辑时光标仍然在纯文本上移动。
+
+| 写法 | 显示 |
+| --- | --- |
+| `**粗体**` | **粗体** |
+| `*斜体*` | *斜体* |
+| `` `代码` `` | `代码` |
+| `$x+y$` | 行内公式 |
+| `\(\Xi_\rho\)` | 行内公式（MinerU 的写法，同样支持） |
+
+公式在单元格里是一个整体：点击它会把光标放在公式开头或结尾（取决于点在左半还是右半），再按需编辑源码。正文里的行内公式同样接受 `$...$` 和 `\(...\)` 两种写法。
 
 **结构编辑按钮**
 
@@ -491,7 +504,7 @@ Windows 集成测试可用 `VSCODE_TEST_EXECUTABLE` 指定实际 `Code.exe` 路�
 
 ## 实现依据与上游文档
 
-本文于 **2026-10-07** 按当前插件实现（`1.6.0`）及本地 `MinerU` 源码核对。上游参考快照为 **3.4.0，提交 `3e602918`（2026-06-18）**；本地目录为 `E:\Desktop\repo\paper-reader\MinerU`，仅是本次参考位置，使用插件无需克隆到此路径。此版本说明不是对 GitHub 最新版本的声明；升级上游时先检查 CLI 参数与 API 协议兼容性。
+本文于 **2026-10-19** 按当前插件实现（`1.6.1`）及本地 `MinerU` 源码核对。上游参考快照为 **3.4.0，提交 `3e602918`（2026-06-18）**；本地目录为 `E:\Desktop\repo\paper-reader\MinerU`，仅是本次参考位置，使用插件无需克隆到此路径。此版本说明不是对 GitHub 最新版本的声明；升级上游时先检查 CLI 参数与 API 协议兼容性。
 
 | 实现文件 | 职责 |
 | --- | --- |

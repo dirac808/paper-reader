@@ -8,12 +8,18 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 
-const extensionRoot = path.join(
-  process.env.USERPROFILE,
-  ".vscode",
-  "extensions",
-  "paper-reader-lab.paper-reader-1.5.6",
-);
+// The version this checkout is meant to verify. Resolving it from package.json keeps the check
+// honest: a leftover install of an older version would otherwise be validated silently, which is
+// worse than not running the check at all.
+const shippedVersion = require(path.join(__dirname, "..", "package.json")).version;
+const extensionsDir = path.join(process.env.USERPROFILE, ".vscode", "extensions");
+const installedRoot = path.join(extensionsDir, `paper-reader-lab.paper-reader-${shippedVersion}`);
+const extensionRoot = process.env.PAPER_READER_EXTENSION_ROOT || installedRoot;
+if (!fs.existsSync(extensionRoot)) {
+  console.error(`Paper Reader ${shippedVersion} is not installed at ${installedRoot}`);
+  console.error(`Install it first: code --install-extension paper-reader-${shippedVersion}.vsix --force`);
+  process.exit(1);
+}
 const mediaRoot = path.join(extensionRoot, "media", "markdown");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -583,6 +589,77 @@ async function main() {
       check("a cell tall enough to click near its bottom exists", false, cellFill);
     }
 
+    // Inline marks inside cells: emphasis and inline math render at rest, both forms of math
+    // delimiter work, and pressing a rendered cell restores its Markdown source for editing.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      'Prose with \\(\\Xi_\\rho\\) and $a+b$.',
+      '',
+      '| 标记 | 公式 | 代码 |',
+      '| --- | --- | --- |',
+      '| **x** | \\(\\Xi_\\rho\\) | `a_b` |',
+      '| *i* | $x+y$ | 纯文本 |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(500);
+    const inlineRender = await evaluate(client, `(() => {
+      const cells = [...document.querySelectorAll('.paper-reader-cm-table .paper-reader-cm-cell')];
+      const strong = cells.find((cell) => cell.querySelector('strong'));
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        proseMath: document.querySelectorAll('.cm-line .paper-reader-cm-inline-math').length,
+        rendered: cells.filter((cell) => cell.dataset.cellMode === 'rendered').length,
+        bold: strong ? strong.textContent : null,
+        boldSource: strong ? strong.dataset.source : null,
+        katex: cells.filter((cell) => cell.querySelector('.paper-reader-cm-cell-math .katex')).length,
+        code: cells.filter((cell) => cell.querySelector('code')).length,
+        em: cells.filter((cell) => cell.querySelector('em')).length,
+      };
+    })()`);
+    check("inline emphasis, code and both math delimiters render inside cells",
+      inlineRender.tables === 1 && inlineRender.proseMath >= 2 && inlineRender.rendered >= 4 &&
+      inlineRender.bold === 'x' && inlineRender.boldSource === '**x**' &&
+      inlineRender.katex >= 2 && inlineRender.code >= 1 && inlineRender.em >= 1,
+      inlineRender);
+
+    const strongSpot = await evaluate(client, `(() => {
+      const strong = document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell strong');
+      if (!strong) return null;
+      const cell = strong.closest('.paper-reader-cm-cell');
+      const strongRect = strong.getBoundingClientRect();
+      const rect = cell.getBoundingClientRect();
+      return {
+        x: Math.round(strongRect.right - 1),
+        y: Math.round(rect.top + rect.height / 2),
+      };
+    })()`);
+    let boldSource = null;
+    if (strongSpot) {
+      await click(client, strongSpot.x, strongSpot.y);
+      await delay(300);
+      boldSource = await evaluate(client, `(() => {
+        const cell = document.activeElement?.closest?.('.paper-reader-cm-cell');
+        return {
+          tables: document.querySelectorAll('.paper-reader-cm-table').length,
+          mode: cell?.dataset.cellMode ?? null,
+          text: cell?.textContent ?? null,
+          offset: window.getSelection()?.anchorOffset ?? null,
+        };
+      })()`);
+      await evaluate(client, `document.activeElement?.blur()`);
+      await delay(250);
+      const reRendered = await evaluate(client, `(() => {
+        const strong = document.querySelector('.paper-reader-cm-table .paper-reader-cm-cell strong');
+        return { strong: strong ? strong.textContent : null };
+      })()`);
+      check("pressing a rendered cell edits its Markdown source and renders again on blur",
+        boldSource.tables === 1 && boldSource.mode === 'source' &&
+        boldSource.text === '**x**' && Number.isFinite(boldSource.offset) &&
+        reRendered.strong === 'x',
+        { strongSpot, boldSource, reRendered });
+    } else {
+      check("a rendered bold cell exists to press", false, inlineRender);
+    }
+
     // 7. The explicit source escape hatch is present in the toolbar.
     check("table source button is wired",
       await evaluate(client, `!!document.querySelector('[data-command="table-source"]')`));
@@ -594,10 +671,18 @@ async function main() {
   } finally {
     client?.close();
     browser.kill();
+    server.closeAllConnections?.();
     server.close();
     await delay(200);
-    await fs.promises.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    // A locked temp profile must not turn a passing run into a failure.
+    await fs.promises.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+      .catch(() => {});
   }
 }
 
-main().catch((error) => { console.error(error); process.exitCode = 1; });
+main().then(() => {
+  process.exit(process.exitCode ?? 0);
+}).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
