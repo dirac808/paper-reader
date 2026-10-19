@@ -27,9 +27,12 @@ import katex from 'katex';
 import {
   deleteTableColumn,
   deleteTableRow,
+  dividerCellFor,
   insertTableColumn,
   insertTableRow,
   isTableDivider,
+  MAX_COLUMN_WIDTH,
+  MIN_COLUMN_WIDTH,
   normalizeTableModel,
   parseTableCellLines,
   serializeTable,
@@ -1111,6 +1114,17 @@ class TableWidget extends WidgetType {
 // contenteditable=false, which is why the editable host has to be a nested element.
 const buildTableElement = (model, session, from, to) => {
   const table = document.createElement('table');
+  // Column widths come from the divider row, so a width the reader dragged survives a reload and
+  // stays visible to any other Markdown renderer. `col` carries the share; the table is laid out
+  // with `table-layout: fixed`, so these are exact.
+  const totalWidth = model.widths.reduce((sum, width) => sum + width, 0) || model.widths.length;
+  const columnGroup = document.createElement('colgroup');
+  model.widths.forEach((width) => {
+    const column = document.createElement('col');
+    column.style.width = `${(width / totalWidth) * 100}%`;
+    columnGroup.appendChild(column);
+  });
+  table.appendChild(columnGroup);
   const head = document.createElement('thead');
   const headRow = document.createElement('tr');
   model.headers.forEach((header, index) => {
@@ -1165,6 +1179,20 @@ const bindFramePress = () => {
     window.addEventListener(type, (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      // A column resize handle owns its gesture. It has to be handled in this capture phase: the
+      // editor's own pointerdown handling on the content element runs before anything bound on the
+      // handle, so a listener there would never see the press.
+      const resizeHandle = target.closest('.paper-reader-cm-col-resize');
+      if (resizeHandle) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (type === 'pointerdown') {
+          const session = sessionForTableElement(resizeHandle.closest('.paper-reader-cm-table'));
+          const boundary = Number(resizeHandle.dataset.columnIndex);
+          if (session && Number.isFinite(boundary)) startColumnResize(event, session, boundary);
+        }
+        return;
+      }
       if (!target.closest('.paper-reader-cm-table')) return;
       if (target.closest('.paper-reader-cm-cell') || target.closest('.paper-reader-cm-table-control')) return;
       event.preventDefault();
@@ -1610,6 +1638,7 @@ const rebuildSessionTable = (session, model, from, to) => {
 const tableModelOf = (block) => normalizeTableModel({
   headers: block.headers,
   alignments: block.alignments,
+  widths: block.widths,
   rows: block.rows,
 });
 
@@ -1884,6 +1913,79 @@ const COLUMN_CONTROL_SIZE = CONTROL_SIZE;
 // Two stacked controls plus the gaps that keep the `×` flush with the table's top edge.
 const COLUMN_BAND_HEIGHT = CONTROL_SIZE * 2 + 4;
 
+// Dragging a column boundary resizes the two columns beside it. The result is written back as the
+// dash counts of the divider row, so the width lives in the Markdown and survives a reload; the
+// drag itself only touches the columns, never the document, until the pointer is released.
+const startColumnResize = (event, session, boundaryIndex) => {
+  if (event.button !== 0 || !view || !session) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const handle = event.target?.closest?.('.paper-reader-cm-col-resize') || null;
+  handle?.classList.add('paper-reader-cm-col-resize--active');
+  const table = session.node?.querySelector?.('table') ||
+    document.querySelector('.paper-reader-cm-table table');
+  if (!table) return;
+  const cols = [...table.querySelectorAll('colgroup col')];
+  const headers = [...table.querySelectorAll('thead th')];
+  if (!cols.length || cols.length !== headers.length || boundaryIndex + 1 >= headers.length) return;
+  const widths = headers.map((th) => th.getBoundingClientRect().width);
+  const startX = event.clientX;
+  const leftIndex = boundaryIndex;
+  const rightIndex = boundaryIndex + 1;
+  const startLeft = widths[leftIndex];
+  const startRight = widths[rightIndex];
+  const pair = startLeft + startRight;
+  const minPx = Math.min(48, pair / 2);
+
+  const apply = (leftPx, rightPx) => {
+    const total = widths.reduce(
+      (sum, width, index) => sum + (index === leftIndex ? leftPx : index === rightIndex ? rightPx : width),
+      0,
+    );
+    cols.forEach((col, index) => {
+      const px = index === leftIndex ? leftPx : index === rightIndex ? rightPx : widths[index];
+      col.style.width = `${(px / total) * 100}%`;
+    });
+  };
+  const move = (moveEvent) => {
+    const delta = moveEvent.clientX - startX;
+    const left = Math.max(minPx, Math.min(pair - minPx, startLeft + delta));
+    apply(left, pair - left);
+  };
+  const finish = () => {
+    window.removeEventListener('pointermove', move, true);
+    window.removeEventListener('pointerup', finish, true);
+    handle?.classList.remove('paper-reader-cm-col-resize--active');
+    const finalWidths = headers.map((th) => th.getBoundingClientRect().width);
+    const total = finalWidths.reduce((sum, width) => sum + width, 0);
+    if (!total) return;
+    const blocks = view.state.field(documentBlockPreview).blocks;
+    const block = blocks.find((entry) => entry.type === 'table' && entry.from === session.from) ||
+      blocks.find((entry) => entry.type === 'table' &&
+        entry.from <= session.to && entry.to >= session.from);
+    const dividerCells = block?.source?.dividerCells;
+    if (!dividerCells || dividerCells.length !== finalWidths.length) return;
+    // Dash counts are a share of a fixed budget: fifteen per column, which keeps the divider row
+    // readable while still representing a dragged ratio closely enough to survive a reload.
+    const budget = finalWidths.length * 15;
+    const weights = finalWidths.map((px) => Math.max(
+      MIN_COLUMN_WIDTH,
+      Math.min(budget, Math.round((px / total) * budget)),
+    ));
+    const text = weights
+      .map((width, index) => dividerCellFor(block.alignments?.[index] || null, width))
+      .join(' | ');
+    // Divider cells carry their editable range as contentStart/contentEnd; the pipes and the
+    // padding spaces around them stay untouched.
+    const from = dividerCells[0].contentStart;
+    const to = dividerCells[dividerCells.length - 1].contentEnd;
+    if (view.state.sliceDoc(from, to) === text) return;
+    view.dispatch({ changes: { from, to, insert: text } });
+  };
+  window.addEventListener('pointermove', move, true);
+  window.addEventListener('pointerup', finish, true);
+};
+
 const attachTableControls = (table, session) => {
   // Re-binding is allowed: a structural edit rebuilds the table while it is still detached, so
   // the cells captured here have zero rects until it lands in the document. Whoever mounts the
@@ -1950,6 +2052,21 @@ const attachTableControls = (table, session) => {
     }
   });
   add('appendColumn', columns - 1, '+', 'Add column at the end', 6, `column-${columns - 1}`);
+
+  // One resize handle per internal column boundary. It lives in the same layer as the buttons,
+  // which is `pointer-events: none`, so the handle opts back in on its own.
+  const resizeHandles = [];
+  for (let index = 0; index < columns - 1; index += 1) {
+    const handle = document.createElement('div');
+    handle.className = 'paper-reader-cm-col-resize';
+    handle.dataset.columnIndex = String(index);
+    handle.setAttribute('title', '拖动调整列宽');
+    handle.setAttribute('aria-label', `Resize column ${index + 1}`);
+    layer.appendChild(handle);
+    resizeHandles.push(handle);
+  }
+  session.resizeHandles = resizeHandles;
+
   liveBodyRows().forEach((_row, rowIndex) => {
     const junctionKey = `row-junction-${rowIndex}`;
     add('deleteRow', rowIndex, '×', `Delete row ${rowIndex + 1}`, 3, `row-${rowIndex}`);
@@ -1973,7 +2090,12 @@ const attachTableControls = (table, session) => {
   const layoutTableControls = () => {
     const headerCells = liveHeaderCells();
     const bodyRows = liveBodyRows();
-    if (!headerCells.length || !bodyRows.length) return false;
+    if (!headerCells.length || !bodyRows.length) {
+      // A table with no body rows has no geometry to place anything against; leaving the resize
+      // handles at their default position would draw them at the widget origin.
+      (session.resizeHandles || []).forEach((handle) => { handle.style.display = 'none'; });
+      return false;
+    }
     // Cells are stretched to their row's height here, where the geometry is real. Done before
     // anything is measured, so the controls are placed against the final layout.
     stretchTableCells(mountedTable());
@@ -2032,6 +2154,24 @@ const attachTableControls = (table, session) => {
         place(controls.get(`appendRow:${rowIndex}`), rowLaneX(rect), rect.bottom + COLUMN_BAND_HEIGHT + 2, `appendRow:${rowIndex}`);
         place(controls.get('deleteTable:0'), rect.right + CONTROL_SIZE + 6, rect.top, 'deleteTable:0');
       }
+    });
+
+    // Resize handles sit on the column borders inside the header row. Restricting them to the
+    // header keeps a press near the edge of a body cell available for selecting its text, which a
+    // full-height handle would swallow.
+    const headRow = mountedTable().querySelector('thead tr');
+    const headRect = headRow ? headRow.getBoundingClientRect() : null;
+    (session.resizeHandles || []).forEach((handle, index) => {
+      const cell = headerCells[index];
+      if (!cell || !headRect || !headRect.height) {
+        handle.style.display = 'none';
+        return;
+      }
+      const rect = cell.getBoundingClientRect();
+      handle.style.display = '';
+      handle.style.left = `${Math.round(rect.right - frame.left - 4)}px`;
+      handle.style.top = `${Math.round(headRect.top - frame.top)}px`;
+      handle.style.height = `${Math.round(headRect.height)}px`;
     });
 
     session.controlLayoutOrigin = frame.left + frame.top;

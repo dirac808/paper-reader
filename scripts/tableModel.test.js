@@ -39,12 +39,30 @@ const roundTrip = (table, label) => {
   assert.deepStrictEqual(parsed.rows, table.rows, `${label}: rows drifted: ${text}`);
   assert.strictEqual(parsed.headers.length, table.headers.length,
     `${label}: columns drifted: ${text}`);
+  if (table.widths) {
+    assert.deepStrictEqual(parsed.widths, table.widths, `${label}: column widths drifted: ${text}`);
+  }
   return parsed;
 };
 
 const plain = model.parseTableCellLines(lines("| A | B |\n| --- | --- |\n| 1 | 2 |"));
 assert.deepStrictEqual(plain.headers, ["A", "B"]);
 assert.deepStrictEqual(plain.rows, [["1", "2"]]);
+
+// A column's width is carried by the dash count of its divider marker, so a width the reader
+// dragged survives a reload and other renderers still read the row as alignment.
+assert.deepStrictEqual(plain.widths, [3, 3]);
+const wide = model.parseTableCellLines(lines("| A | B | C |\n| :--- | ------- | ---: |\n| 1 | 2 | 3 |"));
+assert.deepStrictEqual(wide.widths, [3, 7, 3]);
+assert.deepStrictEqual(wide.alignments, ["left", null, "right"]);
+assert.strictEqual(model.serializeTable({
+  headers: ["A"], alignments: [null], widths: [9], rows: [],
+}), "| A |\n| --------- |");
+assert.strictEqual(model.serializeTable({
+  headers: ["A"], alignments: ["center"], widths: [5], rows: [],
+}), "| A |\n| :-----: |");
+roundTrip({ headers: ["A", "B"], alignments: [null, null], widths: [4, 8], rows: [["1", "2"]] }, "widths");
+roundTrip({ headers: ["A", "B"], alignments: ["center", "right"], widths: [3, 12], rows: [] }, "aligned widths");
 
 // Cell source ranges drive every in-place edit, so they have to point at the exact text.
 assert.strictEqual(plain.source.headerCells[1].text, "B");

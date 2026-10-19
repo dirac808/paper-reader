@@ -3233,6 +3233,86 @@ async function main() {
     assert.ok(tableWidth.long && tableWidth.long.height > tableWidth.long.lineHeight * 1.5,
       `Long cell text must wrap onto more than one line: ${JSON.stringify(tableWidth)}`);
 
+    // Column widths are adjustable. Dragging the boundary between two columns resizes both, and
+    // the ratio is written into the divider row so it survives a reload.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| 1 | 2 | 3 |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const resizeBefore = await evaluate(client, `(() => {
+      const table = document.querySelector('.paper-reader-cm-table table');
+      return {
+        headers: [...table.querySelectorAll('thead th')].map((th) => Math.round(th.getBoundingClientRect().width)),
+        handles: document.querySelectorAll('.paper-reader-cm-col-resize').length,
+        divider: window.paperReaderMarkdownPerformance.documentText.split('\\n')[1],
+      };
+    })()`);
+    const resizeHandle = await evaluate(client, `(() => {
+      const handle = document.querySelector('.paper-reader-cm-col-resize[data-column-index="0"]');
+      if (!handle) return null;
+      const rect = handle.getBoundingClientRect();
+      const header = document.querySelector('.paper-reader-cm-table thead th');
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        boundary: Math.round(header.getBoundingClientRect().right),
+      };
+    })()`);
+    assert.ok(resizeHandle && resizeBefore.handles === 2,
+      `A table with three columns must offer two resize handles: ${JSON.stringify({ resizeBefore, resizeHandle })}`);
+    assert.ok(Math.abs(resizeHandle.x - resizeHandle.boundary) <= 6,
+      `The resize handle must sit on the column boundary: ${JSON.stringify({ resizeBefore, resizeHandle })}`);
+    await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: resizeHandle.x, y: resizeHandle.y });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x: resizeHandle.x, y: resizeHandle.y,
+      button: 'left', buttons: 1, clickCount: 1,
+    });
+    await delay(60);
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved', x: resizeHandle.x + 120, y: resizeHandle.y,
+      button: 'left', buttons: 1,
+    });
+    await delay(120);
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x: resizeHandle.x + 120, y: resizeHandle.y,
+      button: 'left', buttons: 0, clickCount: 1,
+    });
+    await delay(400);
+    const resizeAfter = await evaluate(client, `(() => {
+      const table = document.querySelector('.paper-reader-cm-table table');
+      const widths = [...table.querySelectorAll('thead th')].map((th) => Math.round(th.getBoundingClientRect().width));
+      const divider = window.paperReaderMarkdownPerformance.documentText.split('\\n')[1];
+      const dashes = (divider || '').split('|').slice(1, -1).map((cell) => (cell.match(/-/g) || []).length);
+      return {
+        tables: document.querySelectorAll('.paper-reader-cm-table').length,
+        headers: widths,
+        divider,
+        dashes,
+        handles: document.querySelectorAll('.paper-reader-cm-col-resize').length,
+      };
+    })()`);
+    assert.strictEqual(resizeAfter.tables, 1,
+      `Resizing a column must keep the table rendered: ${JSON.stringify({ resizeBefore, resizeAfter })}`);
+    assert.ok(resizeAfter.headers[0] > resizeBefore.headers[0] + 60,
+      `Dragging the boundary right must widen the left column: ${JSON.stringify({ resizeBefore, resizeAfter })}`);
+    assert.ok(resizeAfter.headers[1] < resizeBefore.headers[1] - 60,
+      `Dragging the boundary right must narrow the right column: ${JSON.stringify({ resizeBefore, resizeAfter })}`);
+    assert.ok(Math.abs((resizeAfter.headers[0] + resizeAfter.headers[1]) -
+      (resizeBefore.headers[0] + resizeBefore.headers[1])) <= 6,
+      `The resized pair must keep its combined width: ${JSON.stringify({ resizeBefore, resizeAfter })}`);
+    assert.notStrictEqual(resizeAfter.divider, resizeBefore.divider,
+      `The new ratio must be written into the divider row: ${JSON.stringify({ resizeBefore, resizeAfter })}`);
+    // The persisted dashes must describe the widths on screen, within rounding.
+    const totalPx = resizeAfter.headers.reduce((sum, width) => sum + width, 0);
+    const totalDash = resizeAfter.dashes.reduce((sum, width) => sum + width, 0);
+    for (let index = 0; index < resizeAfter.headers.length; index += 1) {
+      assert.ok(Math.abs(resizeAfter.headers[index] / totalPx - resizeAfter.dashes[index] / totalDash) < 0.05,
+        `Persisted dash ratio must match the rendered column: ${JSON.stringify({ resizeAfter })}`);
+    }
+
     await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(
       'Intro paragraph.\n\n'
     )}},'*')`);

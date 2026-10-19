@@ -936,6 +936,32 @@ body.is-web .vditor-context-menu__item--desktop-only:focus-visible {
     color: var(--vscode-editor-foreground);
 }
 
+/* Column resize handles sit on the table's own column borders, spanning its height. The layer is
+   pointer-events: none, so the handle opts back in on its own. */
+.paper-reader-cm-col-resize {
+    position: absolute;
+    width: 9px;
+    pointer-events: auto;
+    cursor: col-resize;
+    z-index: 1;
+}
+
+.paper-reader-cm-col-resize::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: transparent;
+    transition: background 0.08s ease-in;
+}
+
+.paper-reader-cm-col-resize:hover::after,
+.paper-reader-cm-col-resize--active::after {
+    background: var(--vscode-focusBorder, #3794ff);
+}
+
 .paper-reader-cm-heading-1,
 .paper-reader-cm-heading-2,
 .paper-reader-cm-heading-3,

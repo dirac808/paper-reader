@@ -63,17 +63,37 @@ export const isTableDivider = (text) => {
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 };
 
+// Column widths travel in the divider row: a column's share is the number of dashes in its
+// marker. This keeps the width in the Markdown itself (so it survives a reload, and other
+// renderers still read the row as alignment), instead of hiding it in editor state that would
+// be lost as soon as the file moved.
+export const MIN_COLUMN_WIDTH = 3;
+// Dash counts are a share of a fixed budget (`columns * 20`), not pixels, so the number has to be
+// allowed to grow with the column count; a single wide column can own most of the budget.
+export const MAX_COLUMN_WIDTH = 200;
+
+const clampColumnWidth = (value) => {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return MIN_COLUMN_WIDTH;
+  return Math.max(MIN_COLUMN_WIDTH, Math.min(MAX_COLUMN_WIDTH, Math.round(number)));
+};
+
+export const dividerCellFor = (alignment, width) => {
+  const dashes = '-'.repeat(clampColumnWidth(width));
+  if (alignment === 'center') return `:${dashes}:`;
+  if (alignment === 'right') return `${dashes}:`;
+  if (alignment === 'left') return `:${dashes}`;
+  return dashes;
+};
+
+export const columnWidthFromDivider = (cell) => clampColumnWidth((String(cell).match(/-/g) || []).length);
+
 export const serializeTable = (model) => {
   const columns = Math.max(1, model.headers.length);
   const headers = Array.from({ length: columns }, (_value, index) =>
     escapeTableCell(model.headers[index]));
-  const divider = Array.from({ length: columns }, (_value, index) => {
-    const alignment = model.alignments?.[index] || null;
-    if (alignment === 'center') return ':---:';
-    if (alignment === 'right') return '---:';
-    if (alignment === 'left') return ':---';
-    return '---';
-  });
+  const divider = Array.from({ length: columns }, (_value, index) =>
+    dividerCellFor(model.alignments?.[index] || null, model.widths?.[index]));
   const rows = (model.rows || []).map((row) =>
     `| ${Array.from({ length: columns }, (_value, index) => escapeTableCell(row[index])).join(' | ')} |`);
   return [
@@ -87,23 +107,25 @@ export const normalizeTableModel = (model) => {
   const columns = Math.max(1, model.headers.length);
   const headers = Array.from({ length: columns }, (_value, index) => model.headers[index] ?? '');
   const alignments = Array.from({ length: columns }, (_value, index) => model.alignments?.[index] ?? null);
+  const widths = Array.from({ length: columns }, (_value, index) => clampColumnWidth(model.widths?.[index]));
   const rows = (model.rows || []).map((row) =>
     Array.from({ length: columns }, (_value, index) => row[index] ?? ''));
-  return { headers, alignments, rows };
+  return { headers, alignments, widths, rows };
 };
 
 export const insertTableColumn = (model, index, position = 'after') => {
   const next = normalizeTableModel(model);
   const columns = next.headers.length;
   const at = Math.max(0, Math.min(columns, position === 'before' ? index : index + 1));
-  const append = (list) => {
+  const append = (list, value = '') => {
     const copy = list.slice();
-    copy.splice(at, 0, '');
+    copy.splice(at, 0, value);
     return copy;
   };
   return normalizeTableModel({
     headers: append(next.headers),
     alignments: append(next.alignments),
+    widths: append(next.widths, MIN_COLUMN_WIDTH),
     rows: next.rows.map((row) => append(row)),
   });
 };
@@ -115,6 +137,7 @@ export const deleteTableColumn = (model, index) => {
   return normalizeTableModel({
     headers: remove(next.headers),
     alignments: remove(next.alignments),
+    widths: remove(next.widths),
     rows: next.rows.map((row) => remove(row)),
   });
 };
@@ -159,6 +182,7 @@ export const parseTableCellLines = (lines) => {
   return {
     headers: headerCells.map((cell) => cell.text),
     alignments: dividerCells.map((cell) => tableAlignment(cell.text)),
+    widths: dividerCells.map((cell) => columnWidthFromDivider(cell.text)),
     rows: bodyLines.map((entry) => entry.cells.map((cell) => cell.text)),
     source: {
       headerCells,

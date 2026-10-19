@@ -739,6 +739,69 @@ async function main() {
       tableWidth.long.height > tableWidth.long.lineHeight * 1.5,
       tableWidth);
 
+    // Column widths are adjustable: drag the handle on a column border and the divider row keeps
+    // the new ratio, so the width survives a reload.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      '| A | B | C |',
+      '| --- | --- | --- |',
+      '| 1 | 2 | 3 |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const resizeStart = await evaluate(client, `(() => {
+      const table = document.querySelector('.paper-reader-cm-table table');
+      const handle = document.querySelector('.paper-reader-cm-col-resize[data-column-index="0"]');
+      if (!table || !handle) return null;
+      const rect = handle.getBoundingClientRect();
+      const header = table.querySelector('thead th');
+      return {
+        x: Math.round(rect.left + rect.width / 2),
+        y: Math.round(rect.top + rect.height / 2),
+        boundary: Math.round(header.getBoundingClientRect().right),
+        widths: [...table.querySelectorAll('thead th')].map((th) => Math.round(th.getBoundingClientRect().width)),
+        handles: document.querySelectorAll('.paper-reader-cm-col-resize').length,
+      };
+    })()`);
+    if (resizeStart) {
+      await mouse(client, "mouseMoved", resizeStart.x, resizeStart.y);
+      await mouse(client, "mousePressed", resizeStart.x, resizeStart.y,
+        { button: "left", buttons: 1, clickCount: 1 });
+      await delay(60);
+      await mouse(client, "mouseMoved", resizeStart.x + 100, resizeStart.y,
+        { button: "left", buttons: 1 });
+      await delay(100);
+      await mouse(client, "mouseReleased", resizeStart.x + 100, resizeStart.y,
+        { button: "left", buttons: 0, clickCount: 1 });
+      await delay(400);
+      const resizeDone = await evaluate(client, `(() => {
+        const table = document.querySelector('.paper-reader-cm-table table');
+        const widths = [...table.querySelectorAll('thead th')].map((th) => Math.round(th.getBoundingClientRect().width));
+        const divider = window.paperReaderMarkdownPerformance.documentText.split('\\n')[1] || '';
+        const dashes = divider.split('|').slice(1, -1).map((cell) => (cell.match(/-/g) || []).length);
+        return {
+          tables: document.querySelectorAll('.paper-reader-cm-table').length,
+          widths,
+          divider,
+          dashes,
+        };
+      })()`);
+      const totalPx = resizeDone.widths.reduce((sum, width) => sum + width, 0);
+      const totalDash = resizeDone.dashes.reduce((sum, width) => sum + width, 0);
+      const ratioMatches = resizeDone.widths.every((width, index) =>
+        Math.abs(width / totalPx - resizeDone.dashes[index] / totalDash) < 0.05);
+      check("dragging a column border resizes the columns and records the width",
+        resizeDone.tables === 1 &&
+        Math.abs(resizeStart.x - resizeStart.boundary) <= 6 &&
+        resizeStart.handles === 2 &&
+        resizeDone.widths[0] > resizeStart.widths[0] + 50 &&
+        resizeDone.widths[1] < resizeStart.widths[1] - 50 &&
+        resizeDone.divider !== '| --- | --- | --- |' &&
+        ratioMatches,
+        { resizeStart, resizeDone });
+    } else {
+      check("a multi-column table offers a resize handle", false, null);
+    }
+
     // 7. The explicit source escape hatch is present in the toolbar.
     check("table source button is wired",
       await evaluate(client, `!!document.querySelector('[data-command="table-source"]')`));
