@@ -660,6 +660,42 @@ async function main() {
       check("a rendered bold cell exists to press", false, inlineRender);
     }
 
+    // A first keystroke in a cell holding only whitespace must reach the document. Such a cell's
+    // editable range used to end before it started, so the commit threw and the text vanished.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      '| A | B |',
+      '| --- | --- |',
+      '|  |  |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const emptyCellSpot = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:first-child td:first-child .paper-reader-cm-cell');
+      if (!cell) return null;
+      const rect = cell.getBoundingClientRect();
+      return { x: Math.round(rect.left + 6), y: Math.round(rect.top + rect.height / 2) };
+    })()`);
+    if (emptyCellSpot) {
+      await click(client, emptyCellSpot.x, emptyCellSpot.y);
+      await delay(200);
+      await client.send('Input.insertText', { text: '**s**' });
+      await delay(700);
+      const emptyCellTyped = await evaluate(client, `(() => {
+        const cell = document.querySelector('.paper-reader-cm-table tbody tr:first-child td:first-child .paper-reader-cm-cell');
+        return {
+          tables: document.querySelectorAll('.paper-reader-cm-table').length,
+          doc: window.paperReaderMarkdownPerformance.documentText,
+          commits: window.paperReaderMarkdownPerformance.tableCommits,
+          text: cell ? cell.textContent : null,
+        };
+      })()`);
+      check("typing into an empty cell commits to the document",
+        emptyCellTyped.tables === 1 && emptyCellTyped.doc.includes('**s**') && emptyCellTyped.commits >= 1,
+        { emptyCellSpot, emptyCellTyped });
+    } else {
+      check("the empty-cell fixture rendered a cell", false, null);
+    }
+
     // 7. The explicit source escape hatch is present in the toolbar.
     check("table source button is wired",
       await evaluate(client, `!!document.querySelector('[data-command="table-source"]')`));

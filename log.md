@@ -453,3 +453,41 @@ host 发 `update` 替换文档时，表格块的范围可能没变，而装饰�
 `npm run test:unit`（含表格模型、行内解析、文档一致性）、`test:performance`、`test:markdown-performance` 通过；主套件正/反方向、长文档分支通过；已安装 bundle（SHA256 与工作区一致）**19 项**通过。长文档 250,974 字符 `maxUpdateMs` 0.2 / `maxParseMs` 5.1 / `pointerP95` 0.8；`fullSourceScans` 由 22 变为 24，来自表格内容变化时的整块刷新，未影响交互延迟。
 
 范围说明：单元格的强调整体内文不再嵌套解析（`**a *b* c**` 里的 `*b*` 按字面显示）；表格单元格仍不支持换行，这是表格语法的限制。
+
+## 2026-10-19（补充）：空单元格首次输入丢失（1.6.1 内修复）
+
+用户反馈「输入 `**s**`，内容只存在了一段时间，然后就消失了」，截图里是一个有多处空单元格的表格。
+
+### 复现与根因
+
+探针在空单元格里逐字输入 `**s**`，空闲提交后 `documentText` **没有变化**，`tableCommits` 仍为 0，页面记录到：
+
+```
+Uncaught RangeError: Invalid change range 58 to 56 (in doc of length 123)
+```
+
+根因在 `splitTableRowCells`（`media/markdown/tableModel.js`）：单元格全是空白（如 `|  |`）时，`leading` 与 `trailing` 都等于 `raw.length`，于是
+
+```
+contentStart = start + leading        // start + 2
+contentEnd   = index - trailing       // start + 2 - 2 = start
+```
+
+**结束位落在起始位之前**。提交时 `changes: { from: contentStart + prefix, to: contentEnd - suffix }` 得到 `from > to`，CodeMirror 抛 `Invalid change range`，于是内容只留在 DOM；失焦后 `settleCellAfterEdit` 把 DOM 当源码重新渲染成 `s`，看起来就是「先出现、随后消失」，重开文件则完全没有。
+
+这是**空单元格首次输入**的既有缺陷，与行内标记无关——1.6.0 里同样存在，只是之前没有针对空单元格的用例。
+
+### 修复
+
+`contentEnd` 取 `Math.max(contentStart, line.from + index - trailing)`：全空白单元格的可编辑区间变成零长度，首次输入成为在该位置的插入。
+
+### 回归测试
+
+- 单测（`scripts/tableModel.test.js`）：对 `|  |   |  x  |` 三种单元格断言 `contentEnd >= contentStart` 且 `contentEnd - contentStart === text.length`，并断言空单元格的 `contentStart` 落在单元格内文本的起点。
+- 浏览器套件：新增「空单元格输入必须进入文档」，断言 `documentText` 含输入内容且 `tableCommits >= 1`。
+- 已安装验证器：同样的空单元格用例（现共 20 项）。
+- 静态守卫：原先锁定的字符串 `contentStart: line.from + start + leading` 因重构改为局部变量而失效，已同步为新签名，并新增对 `Math.max(...)` clamp 的断言——这类守卫必须随重构一起更新，否则会误报。
+
+### 验证
+
+`test:unit`（含表格模型、行内解析、文档一致性）、`test:performance`、`test:markdown-performance` 通过；主套件正方向与长文档分支通过；已安装 bundle（SHA256 一致）**20 项**通过。长文档 250,974 字符 `maxUpdateMs` 0.3 / `maxParseMs` 5.5 / `pointerP95` 0.9 / `fullSourceScans` 25。

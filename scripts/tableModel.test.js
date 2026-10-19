@@ -67,6 +67,27 @@ roundTrip(
   "inserted row at top"
 );
 
+// A cell holding only whitespace has no text, and its leading/trailing padding overlap. The
+// editable range used to end before it started, so committing a first keystroke in such a cell
+// threw "Invalid change range" and the text never reached the document.
+const whitespaceCells = model.parseTableCellLines(lines(
+  "| A | B | C |\n| --- | --- | --- |\n|  |   |  x  |"
+));
+for (const [index, cell] of whitespaceCells.source.bodyCells[0].entries()) {
+  assert.ok(cell.contentEnd >= cell.contentStart,
+    `cell ${index}: contentEnd ${cell.contentEnd} < contentStart ${cell.contentStart}`);
+  assert.strictEqual(cell.contentEnd - cell.contentStart, cell.text.length,
+    `cell ${index}: editable range does not match its text ${JSON.stringify(cell)}`);
+}
+
+// A first keystroke in an empty cell is an insertion at the cell's text start.
+const blankCell = whitespaceCells.source.bodyCells[0][0];
+assert.strictEqual(blankCell.text, "");
+const typedLine = "| A | B | C |\n| --- | --- | --- |\n|  |   |  x  |";
+const blankLineStart = typedLine.indexOf("|  |   |");
+const blankFrom = blankLineStart + 1 + 2; // after `| ` and the cell's own padding
+assert.strictEqual(blankCell.contentStart, blankFrom);
+
 // A sequence of structural edits must not drift the shape.
 let edited = { headers: ["A", "B"], alignments: [null, null], rows: [["1", "2"], ["3", "4"]] };
 edited = model.insertTableColumn(edited, 0, "after");

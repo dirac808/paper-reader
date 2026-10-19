@@ -87,8 +87,10 @@ assert.ok(editor.includes("runToolbarCommand"));
 
 // Live table editing: the table stays rendered while cells, rows and columns are edited.
 assert.ok(tableModel.includes("export const splitTableRowCells = (line)"));
-assert.ok(tableModel.includes("contentStart: line.from + start + leading"));
-assert.ok(tableModel.includes("contentEnd: line.from + index - trailing"));
+assert.ok(tableModel.includes("const contentStart = line.from + start + leading;"));
+// A whitespace-only cell has no text, and its leading/trailing padding overlap. The end of the
+// editable range must be clamped to its start, or committing the first keystroke throws.
+assert.ok(tableModel.includes("const contentEnd = Math.max(contentStart, line.from + index - trailing);"));
 assert.ok(tableModel.includes("export const serializeTable = (model)"));
 assert.ok(tableModel.includes("export const insertTableColumn = (model, index, position = 'after')"));
 assert.ok(tableModel.includes("export const deleteTableColumn = (model, index)"));

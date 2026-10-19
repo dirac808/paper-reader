@@ -6,6 +6,7 @@
 - Render inline math inside table cells, in both `$...$` and `\(\Xi_\rho\)` form.
 - Accept `\(\Xi_\rho\)` for inline math in prose too. MinerU writes formulas that way; the document is no longer required to use `$...$`.
 - Fix a table showing stale content after the document was replaced: a host update could change a table's cells without moving its range, and the editor then kept the previously mounted cells.
+- Fix a first keystroke typed into a cell that holds only whitespace never reaching the document: the cell's editable range could end before it started, so the commit failed and the text disappeared on the next render.
 - Make the browser test suites exit cleanly on Windows instead of hanging in profile cleanup, and stop a locked temp directory from turning a passing run into a failure.
 
 ## 1.6.0 (2026/10/06)

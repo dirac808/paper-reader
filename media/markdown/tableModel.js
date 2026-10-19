@@ -24,11 +24,16 @@ export const splitTableRowCells = (line) => {
       if (index === text.length && !raw && cells.length > 0) break;
       const leading = raw.length - raw.trimStart().length;
       const trailing = raw.length - raw.trimEnd().length;
+      const contentStart = line.from + start + leading;
+      // A cell holding only whitespace has no text: its leading and trailing padding overlap, so
+      // `index - trailing` can land before `contentStart`. Clamping keeps the editable range valid
+      // and makes the commit an insertion at the start of the cell instead of an invalid range.
+      const contentEnd = Math.max(contentStart, line.from + index - trailing);
       cells.push({
         raw,
         text: unescapeTableCell(raw.trim()),
-        contentStart: line.from + start + leading,
-        contentEnd: line.from + index - trailing,
+        contentStart,
+        contentEnd,
       });
       start = index + 1;
     }

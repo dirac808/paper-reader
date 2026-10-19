@@ -3134,6 +3134,51 @@ async function main() {
     assert.ok(mathSettled.katex >= 1,
       `The formula must be rendered again after editing: ${JSON.stringify(mathSettled)}`);
 
+    // A first keystroke in a cell that holds only whitespace has to reach the document. Such a
+    // cell's editable range used to end before it started, so the commit threw an invalid-range
+    // error and the text stayed only in the DOM, disappearing on the next render.
+    await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify([
+      '| A | B |',
+      '| --- | --- |',
+      '|  |  |',
+      '',
+    ].join('\n'))}},'*')`);
+    await delay(400);
+    const emptyCellSpot = await evaluate(client, `(() => {
+      const cell = document.querySelector('.paper-reader-cm-table tbody tr:first-child td:first-child .paper-reader-cm-cell');
+      if (!cell) return null;
+      const rect = cell.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + 6),
+        y: Math.round(rect.top + rect.height / 2),
+        text: cell.textContent,
+      };
+    })()`);
+    if (emptyCellSpot) {
+      await clickPoint(client, emptyCellSpot);
+      await delay(150);
+      await client.send('Input.insertText', { text: '**s**' });
+      await delay(700);
+      const emptyCellTyped = await evaluate(client, `(() => {
+        const cell = document.querySelector('.paper-reader-cm-table tbody tr:first-child td:first-child .paper-reader-cm-cell');
+        return {
+          tables: document.querySelectorAll('.paper-reader-cm-table').length,
+          doc: window.paperReaderMarkdownPerformance.documentText,
+          commits: window.paperReaderMarkdownPerformance.tableCommits,
+          cellText: cell ? cell.textContent : null,
+          cellSource: cell ? cell.dataset.source : null,
+        };
+      })()`);
+      assert.strictEqual(emptyCellTyped.tables, 1,
+        `Typing into an empty cell must keep the table rendered: ${JSON.stringify({ emptyCellSpot, emptyCellTyped })}`);
+      assert.ok(emptyCellTyped.doc.includes('**s**'),
+        `Typing into an empty cell must reach the document: ${JSON.stringify({ emptyCellSpot, emptyCellTyped })}`);
+      assert.ok(emptyCellTyped.commits >= 1,
+        `Typing into an empty cell must commit: ${JSON.stringify({ emptyCellSpot, emptyCellTyped })}`);
+    } else {
+      assert.fail('The empty-cell fixture did not render a table cell');
+    }
+
     await evaluate(client, `window.postMessage({type:'update',content:${JSON.stringify(
       'Intro paragraph.\n\n'
     )}},'*')`);
